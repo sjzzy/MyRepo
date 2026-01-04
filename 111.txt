@@ -1,0 +1,370 @@
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement; 
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.text.SimpleDateFormat; 
+import java.util.Date; 
+import java.util.Random;
+import java.util.Stack;
+import java.util.concurrent.atomic.AtomicLong;
+
+/*
+using PK FK to test multiXid
+
+create table mta(a1 int primary key, a2 int references mta(a1), a3 int);
+create table mtb(b1 int primary key, b2 int references mta(a1), b3 int references mtb(b1));
+create table mtc(c1 int primary key, c2 int references mta(a1),c3 int references mtb(b1));
+
+
+a(a1 [0--1000], a2 [0--1000, null] , a3 [0--1000, null] )
+b(b1 [0--10000],b2 [1-1000,null], b3 [0--10000,null])
+c(c1 [0--10000],c2 [1-1000,null], c3 [0--10000,null])
+
+update a set a1=[]
+update a set a2=[]
+update b set b1=[]
+update b set b2=[]
+update b set b3=[]
+update c set c1=[]
+update c set c2=[]
+update c set c3=[]
+
+
+insert into a on update  
+insert into b on update 
+insert into c on update 
+
+delete from a 
+delete from b
+delete from c 
+
+insert into mta select v, case when v%1000%4=0 then v%1000 else null end from (select generate_series(0,1000,2) v);
+insert into mtb  select v, case when v%1000%4=0 then v%1000 else null end,case when v%4=0 then v else null end from (select generate_series(0,10000,2) v);
+insert into mtc select v, case when v%1000%4=0 then v%1000 else null end,case when v%8=0 then v else null end from (select generate_series(0,10000) v);
+*/
+public class MultiXid extends Thread {
+	static String url = "jdbc:gaussdb://8.92.4.221:13003,8.92.4.222:13003,8.92.4.223:13003/tpcc?batchMode=on&tenantName=tenantA&connectMode=auth&tenantPassword=gauss@567&prepareThreshold=1&fetchsize=2";
+	static String user = "test";
+	static String passwd = "gs_123456"; 
+	static long max_id=10000000;
+	static long rollbackPct=1;
+	static long savepointPct=10;
+
+	final static AtomicLong counter = new AtomicLong();
+	Connection conn = null; 
+	PreparedStatement select = null; 
+	static int threads = 0;
+	static DBTYPE dbType=DBTYPE.gaussdb;
+	static String checkSQL=null;
+	static String driver=null ;
+	static boolean debug=false ; 
+	static int transaction_size=3 ; 
+	Random rand = new Random();
+
+	enum DBTYPE  {gaussdb, oracle};
+	
+	Statement stmt = null;
+	int id = 0; 
+
+	static final int interval = 3000;
+	private SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+ 
+	public static void main(String[] args) {
+		final String usage="threads url user password rollbackPct savepointPct max_id db_type debug transaction_size";
+		final String readme="db_type: gaussdb | oracle";
+		final String version="version:0.1";
+		if(args.length != usage.split(" ").length) {
+			System.out.println(version);
+			System.out.println(usage);
+			System.out.println(readme);
+			return ;
+		}
+		
+		try {
+			threads = Integer.parseInt(args[0]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default threads:" + threads + "\n detail:"
+					+ e.getMessage());
+		} 
+
+		url= args[1];
+		user = args[2];
+		passwd = args[3];
+		try {
+			rollbackPct = Long.parseLong(args[4]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default rollbackPct:" + rollbackPct + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		try {
+			savepointPct = Integer.parseInt(args[5]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default savepintPct:" + savepointPct + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		try {
+			max_id = Long.parseLong(args[6]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default max_id:" + max_id + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		if(args[7].trim().equalsIgnoreCase("gaussdb")) {
+			dbType=DBTYPE.gaussdb;
+			driver="com.huawei.gaussdb.jdbc.Driver";
+			checkSQL="select 1";
+		}
+		else if(args[8].trim().equalsIgnoreCase("oracle")) { 
+			dbType=DBTYPE.oracle;
+			driver="oracle.jdbc.driver.OracleDriver";
+			checkSQL="select 1 from dual";
+		}
+		else {
+			System.out.println("not supported " + dbType);
+			System.exit(-1);
+		} 
+		
+		debug=Boolean.parseBoolean(args[8]);
+		
+		try {
+			transaction_size = Integer.parseInt(args[9]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default savepintPct:" + transaction_size + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		for (int i = 0; i <= threads; i++) {
+			new MultiXid(i).start();
+		}		
+	}
+
+	
+	public MultiXid(int i) {
+		id = i;
+	}
+
+	private void initDB() {
+		while(true) {
+			try {
+				conn = this.getConnection(url, user, passwd);
+				stmt = conn.createStatement();
+				
+				return;
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					Thread.sleep(3*1000);
+				}catch (Exception e2) {					
+				}
+			}
+		}
+	}
+
+	private Connection getConnection(String url, String user, String passwd) {
+		Connection conn = null;
+				
+		while (conn == null) {
+			try {
+				Class.forName(driver).newInstance();
+				conn = DriverManager.getConnection(url, user, passwd);
+				conn.setAutoCommit(false);
+			} catch (Exception e) {
+				System.out.println("failed to get connection:" + e.getMessage() + "," + url);
+				try {
+					Thread.sleep(3000);
+				} catch (InterruptedException e1) {
+					// TODO Auto-generated catch block
+					e1.printStackTrace();
+				}
+			}
+		}
+
+		return conn;
+	}
+	
+	public int genValue(int max) {
+		if(rand.nextInt(100)< 10)
+			return -1;
+		return rand.nextInt(max);
+	}
+	
+	public String genA1() {
+		return rand.nextInt(1000)+"";
+	}
+	
+	public String genA1IncludingNull() {
+		if(rand.nextInt(100)< 10)
+			return "null";
+		return rand.nextInt(1000)+"";
+	}
+	
+	public String genB1IncludingNull() {
+		if(rand.nextInt(100)< 10)
+			return "null";
+		return rand.nextInt(10000)+"";
+	}
+	
+	public String genB1() {
+		return rand.nextInt(10000)+"";
+	}
+	
+	public String getInsertSQL(String table_name) { 
+		String sql=null;
+		if(table_name.equals("mta")) {
+			sql=String.format("insert into %s values(%s,%s,%s) on duplicate key update a2=EXCLUDED.a2, a3=EXCLUDED.a3",table_name,genA1(),genA1IncludingNull(),genA1IncludingNull());
+		}else if(table_name.equals("mtb")){
+			sql=String.format("insert into %s values(%s,%s,%s) on duplicate key update b2=EXCLUDED.b2, b3=EXCLUDED.b3",table_name,genB1(),genA1IncludingNull(),genB1IncludingNull());
+		}else {
+			sql=String.format("insert into %s values(%s,%s,%s) on duplicate key update c2=EXCLUDED.c2, c3=EXCLUDED.c3",table_name,genB1(),genA1IncludingNull(),genB1IncludingNull());
+		}
+		return sql;
+	}
+	
+	public String getUpdateSQL(String table_name) { 
+		String sql=null;
+		int key=rand.nextInt(100);
+		if(table_name.equals(tables[0])) {			
+			if(key<33)
+				sql=String.format("update %s set a1=%s where a1=%s",table_name,genA1(),genA1());
+			else if(key < 67)
+				sql=String.format("update %s set a2=%s where a1=%s",table_name,genA1IncludingNull(),genA1());
+			else
+				sql=String.format("update %s set a3=%s where a1=%s",table_name,genA1IncludingNull(),genA1());
+		}else if(table_name.equals(tables[1])){
+			if(key<25)
+				sql=String.format("update %s set b1=%s where b1=%s",table_name,genB1(),genB1());
+			else if(key < 50)
+				sql=String.format("update %s set b2=%s where b1=%s",table_name,genA1IncludingNull(),genB1());
+			else if(key < 75)
+				sql=String.format("update %s set b3=%s where b1=%s",table_name,genB1IncludingNull(),genB1());
+			else
+				sql=String.format("update %s set b2=%s,b3=%s where b1=%s",table_name,genA1IncludingNull(),genB1IncludingNull(),genB1());
+		}else {
+			if(key<25)
+				sql=String.format("update %s set c1=%s where c1=%s",table_name,genB1(),genB1());
+			else if(key < 50)
+				sql=String.format("update %s set c2=%s where c1=%s",table_name,genA1IncludingNull(),genB1());
+			else if(key < 75)
+				sql=String.format("update %s set c3=%s where c1=%s",table_name,genB1IncludingNull(),genB1());
+			else
+				sql=String.format("update %s set c2=%s,c3=%s where c1=%s",table_name,genA1IncludingNull(),genB1IncludingNull(),genB1());
+		}
+		return sql;
+	}
+	public String getDeleteSQL(String table_name) { 
+		String sql=null;
+		if(table_name.equals("mta")) {
+			sql=String.format("delete from %s where a1=%s",table_name,genA1());
+		}else if(table_name.equals("mtb")){
+			sql=String.format("delete from %s where b1=%s",table_name,genB1());
+		}else {
+			sql=String.format("delete from %s where c1=%s",table_name,genB1());
+		}
+		return sql;
+	}
+	
+	final String tables[] = new String[] {"mta","mtb","mtc"};
+	public String getSQL() { 
+		int key=rand.nextInt(100);
+		if(key<33)
+			return getInsertSQL(tables[rand.nextInt(3)]);
+		else if(key<67)
+			return getUpdateSQL(tables[rand.nextInt(3)]);
+		else
+			return getDeleteSQL(tables[rand.nextInt(3)]);
+	}
+	
+	public void run() {
+		//0号线程不会执行update
+		if (id == 0)
+			monitor();  
+		work(); 
+	}
+ 
+	public void monitor() {
+		long num_xacts_old = 0L;
+		long num_xacts_new = 0L; 
+		while (true) {
+			long start_time=System.currentTimeMillis();
+			num_xacts_old = num_xacts_new;
+				
+			try {
+				Thread.sleep(interval);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+			num_xacts_new = counter.get();
+			long end_time=System.currentTimeMillis();
+
+			System.out.println("tps=" + (num_xacts_new - num_xacts_old) * 1000L / (end_time-start_time) + "\t,total_xacts="
+				+ num_xacts_new + "\t," +  sdf.format(new Date()));
+		}
+	}
+ 
+	public void work() {
+		initDB();  
+		String SQL=null;
+		Stack<Integer> stack = new  Stack<Integer>();
+		while (true) { 
+			try {
+				for (int k = 0; k < transaction_size; k++) { 
+					//概率生成savepoint
+					if(rand.nextInt(100)<savepointPct) {
+						stmt.execute("savepoint s"+k);
+						stack.push(k);
+					}
+					SQL = getSQL();
+					try {
+						stmt.executeUpdate(SQL);
+					}catch(SQLException se) {
+						System.out.println( sdf.format(new Date()) + ":" + id +","+ se.getMessage());
+					}
+				
+					if(!stack.isEmpty()) {
+						//概率回滚
+						if(rand.nextInt(100)<33) {
+							for(int index=0;index<rand.nextInt(stack.size())-1;index++)
+								stack.pop();
+							stmt.execute("rollback to savepoint s"+stack.pop());
+						}
+					}
+				}
+				
+				if (rand.nextInt(10000) > rollbackPct) {
+					conn.commit(); //should NOT be failed,  否则会引起校验错误
+				}
+				else
+					conn.rollback();
+				stack.clear();
+				counter.incrementAndGet();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					conn.rollback();
+				}catch(Exception e3) {
+					System.out.println("force rollback failed:" + e3.getMessage());
+				}
+				
+				try {
+					stmt.execute(checkSQL);
+				} catch (Exception e2) {
+					System.out.println("check conn failed:" + e2.getMessage());
+					freeConn();
+					initDB();
+				}
+			}
+		}
+	}
+	
+	private void freeConn() {
+		try {
+			if (conn != null)
+				conn.close();
+		} catch (Exception localException) {
+		}
+		conn = null;
+	}
+}
