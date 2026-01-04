@@ -1,0 +1,18 @@
+package com.huawei.parser;
+
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class NonSqlPattern {
+    private String metaCmd = "(^\\s*COPY\\s+.*?FROM\\s+STDIN.*?\\\\\\..*?$)";
+    private String comments = "(^\\s*(--|\\\\|:).*?$)";
+    Pattern pattern;
+
+    public NonSqlPattern() {
+        pattern = Pattern.compile(metaCmd + "|" + comments, Pattern.CASE_INSENSITIVE | Pattern.MULTILINE | Pattern.DOTALL);
+    }
+    public Matcher matcher(String sql) {
+        return pattern.matcher(sql);
+    }
+}
