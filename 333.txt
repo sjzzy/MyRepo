@@ -1,0 +1,249 @@
+package task;
+
+import java.io.FileInputStream;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.concurrent.ConcurrentHashMap;
+
+/*
+ create table map(id int primary key,v int) with (fillfactor=100); 
+ insert into map select rownum,0 from pg_class a, pg_class b,pg_class c where rownum<=1000000;
+ */
+public class ConcurrentCheck extends Task {
+	private static  int rows=10000;
+	private static  int loopTimes=10000;
+	private static  int parallel=1000;
+	private static  boolean selfCheck=true;
+	private static final String confFile = "cctest.conf"; 
+
+	public static ConcurrentHashMap<Integer, Integer> map = null;
+
+	public PreparedStatement upsert=null;
+	public PreparedStatement select=null;
+	public Statement stmt=null;
+	public PreparedStatement upsert_without_returning=null;
+	
+	static {		
+		try {
+			properties.load(new FileInputStream(confFile));
+		} catch (Exception e) {
+			System.out.println("failed to load " + confFile + ": " + e.getMessage());
+		}
+		dbType=readStringConfig("dbType","gaussdb");
+		url = readStringConfig("url","jdbc:gaussdb://8.92.4.221:13003,8.92.4.222:13003,8.92.4.223:13003/tpcc?batchMode=on&tenantName=tenantA&connectMode=auth&tenantPassword=gauss@567&prepareThreshold=1&fetchsize=2&enableSmartRoute=true");
+		username=readStringConfig("username","test");
+		password=readStringConfig("password","gs_123456");	
+		parallel=readIntConfig("parallel",20);
+	}
+	
+	@Override
+	public void initStmt() throws SQLException{
+		upsert=conn.prepareStatement("insert into map values(?,1) on duplicate key update v=excluded.v+v returning *");
+		upsert_without_returning = conn.prepareStatement("insert into map values(?,1) on duplicate key update v=excluded.v+v");
+		//upsert=conn.prepareStatement("update map set v=v+1 where id =? returning *");
+		select=conn.prepareStatement("select id, v from map where id=?");
+		stmt = conn.createStatement();
+	}
+	static {		
+		loopTimes=readIntConfig("loopTimes",100000);
+		rows=readIntConfig("rows",10000);
+		parallel=readIntConfig("parallel",20);
+		System.out.println("parallel="+ parallel);
+		System.out.println("loopTimes="+ loopTimes);
+		
+		
+		selfCheck=readBooleanConfig("selfCheck",true);
+		if(selfCheck) {
+			map = new ConcurrentHashMap<>(rows+1);
+			for(int k=1;k<=rows;k++) {
+				map.put(k, 0);
+			}
+		}
+	}
+	
+	public ConcurrentCheck(int i) {
+		super(i);	
+	}
+	
+	public void upsert() {
+		ResultSet rs = null;
+		for(int i=0;i<loopTimes;i++) {
+			try {
+				int k = rand.nextInt(rows) + 1;
+				int v, expected_v;
+				upsert.setInt(1, k);
+				rs = upsert.executeQuery();
+				if(!rs.next())
+					System.out.println("incorrect result,can't find k=" + k );			
+				v=rs.getInt(2);
+				expected_v=map.get(k)+1;
+				if(v != expected_v) {
+					System.out.println("incorrect result,k=" + k + ",v=" + v + ",expected_v=" +expected_v);					
+					try {
+						Thread.sleep(10 * 3600 * 1000);
+					}catch (InterruptedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+				}
+				if(rand.nextInt(100)<10) {
+					conn.rollback();
+				}else {
+					map.compute(k, (k1, v1) -> (v1 == null) ? 1 : v1 + 1);
+					conn.commit();
+					
+					select.setInt(1, k);
+					rs = select.executeQuery();
+					if(!rs.next())
+						System.out.println("incorrect result,can't find k=" + k + ", after update");	
+					v=rs.getInt(2);
+					if(v<expected_v) {
+						System.out.println("incorrect result,k=" + k + ",v=" + v + ",expected_v=" +expected_v +", after update");					
+						try {
+							Thread.sleep(10 * 3600 * 1000);
+						}catch (InterruptedException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
+					}
+					conn.commit();
+
+					count2.incrementAndGet();
+				}
+			} catch (SQLException e) {
+				e.printStackTrace();
+				refreshConnIfNecessary();
+			} 
+			
+			refreshConnByRandom(50);
+			
+		}
+		System.out.println("id" + id + " exits");
+	}
+	public void upsert_without_returning() {
+		ResultSet rs = null;
+		for(int i=0;i<loopTimes;i++) {
+			try {
+				int k = rand.nextInt(rows) + 1;
+				int v, expected_v;
+				upsert_without_returning.setInt(1, k);
+				upsert_without_returning.executeUpdate();
+				
+				select.setInt(1, k);
+				rs = select.executeQuery();
+				if(!rs.next())
+					System.out.println("incorrect result,can't find k=" + k );			
+				v=rs.getInt(2);
+				expected_v=map.get(k)+1;
+				if(v != expected_v) {
+					System.out.println("incorrect result,k=" + k + ",v=" + v + ",expected_v=" +expected_v);					
+					try {
+						Thread.sleep(10 * 3600 * 1000);
+					}catch (InterruptedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+				}
+				if(rand.nextInt(100)<10) {
+					conn.rollback();
+				}else {
+					map.compute(k, (k1, v1) -> (v1 == null) ? 1 : v1 + 1);
+					conn.commit();
+					
+					select.setInt(1, k);
+					rs = select.executeQuery();
+					if(!rs.next())
+						System.out.println("incorrect result,can't find k=" + k + ", after update");	
+					v=rs.getInt(2);
+					if(v<expected_v) {
+						System.out.println("incorrect result,k=" + k + ",v=" + v + ",expected_v=" +expected_v +", after update");					
+						try {
+							Thread.sleep(10 * 3600 * 1000);
+						}catch (InterruptedException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
+					}
+					conn.commit();
+
+					count2.incrementAndGet();
+				}
+			} catch (SQLException e) {
+				e.printStackTrace();
+				refreshConnIfNecessary();
+			} 
+			
+			refreshConnByRandom(50);
+			
+		}
+		System.out.println("id" + id + " exits");
+	}
+	
+	
+	public void upsert_with_simple_query() {
+		ResultSet rs = null;
+		for(int i=0;i<loopTimes;i++) {
+			try {
+				int k = rand.nextInt(rows) + 1;
+				int v, expected_v;
+				rs = stmt.executeQuery("insert into map values(" + k + ",1) on duplicate key update v=excluded.v+v returning *");
+				if(!rs.next())
+					System.out.println("incorrect result,can't find k=" + k );			
+				v=rs.getInt(2);
+				expected_v=map.get(k)+1;
+				if(v != expected_v) {
+					System.out.println("incorrect result,k=" + k + ",v=" + v + ",expected_v=" +expected_v);					
+					try {
+						Thread.sleep(10 * 3600 * 1000);
+					}catch (InterruptedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+				}
+				if(rand.nextInt(100)<10) {
+					conn.rollback();
+				}else {
+					map.compute(k, (k1, v1) -> (v1 == null) ? 1 : v1 + 1);
+					conn.commit();
+					
+ 					rs = stmt.executeQuery("select id, v from map where id=" + k);
+					if(!rs.next())
+						System.out.println("incorrect result,can't find k=" + k + ", after update");	
+					v=rs.getInt(2);
+					if(v<expected_v) {
+						System.out.println("incorrect result,k=" + k + ",v=" + v + ",expected_v=" +expected_v +", after update");					
+						try {
+							Thread.sleep(10 * 3600 * 1000);
+						}catch (InterruptedException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
+					}
+					conn.commit();
+
+					count2.incrementAndGet();
+				}
+			} catch (SQLException e) {
+				e.printStackTrace();
+				refreshConnIfNecessary();
+			} 
+			
+			refreshConnByRandom(50);
+			
+		}
+		System.out.println("id" + id + " exits");
+	}
+	
+	public void doTask() {
+		upsert();
+	}
+	
+	public static void main(String args[]) {
+		for(int i=0;i<=parallel;i++) {
+			new ConcurrentCheck(i).start();
+		}
+	}
+
+}
