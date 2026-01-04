@@ -1,0 +1,29 @@
+package com.huawei.parser;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class SqlPattern {
+    String createFpPattern = "(^\\s*CREATE\\s+(OR\\s+REPLACE\\s+)?(FUNCTION|PROCEDURE)\\s+.*?(AS|IS)\\s+((\\$\\$.*?\\$\\$.*?;)|((.*?)(^\\s*/))|('\\s*.*?BEGIN.*?END;\\s*'.*?;)|(BEGIN.*?END;))\\s*$)";
+    String generalCreatePattern = "(^\\s*CREATE\\s+((((FOREIGN|UNLOGGED|((GLOBAL )?TEMP(ORARY)?))\\s+)?TABLE)|TABLESPACE|barrier|DATABASE|((OR\\s+REPLACE\\s+)?directory)|SCHEMA|(DATA\\s+SOURCE)|ROW|(((((APP\\s+)?WORKLOAD)|NODE)\\s+)?GROUP)|((UNIQUE\\s+)?INDEX)|(CONSTRAINT\\s+)?TRIGGER|((OR\\s+REPLACE\\s+)?(MATERIALIZED\\s+)?VIEW)|ROLE|USER|RULE|(RESOURCE\\s+POOL)|AGGREGATE|POLICY|TYPE|CAST|(ACCESS\\s+METHOD)|((DEFAULT\\s+)?CONVERSION)|SERVER|(FOREIGN\\s+DATA)|STATISTICS|(TEXT\\s+SEARCH)|DOMAIN|((TRUSTED\\s+)?(PROCEDURAL\\s+)?LANGUAGE)|((TEMP(ORARY)?\\s+)?SEQUENCE)|(OPERATOR(\\s+CLASS)?)).*?;\\s*$)";
+    String generalSqlPattern = "(^\\s*(SHOW|EXPLAIN|SELECT|UPDATE|DELETE|INSERT|ALTER|DROP|TRUNCATE|GRANT|REVOKE|WITH|TABLE|DEALLOCATE|COMMENT|ANALYZE|VACUUM|MERGE|COPY|PREPARE|EXECUTE|RESET|(SET(\\s+SESSION)?))\\s+.*?;\\s*$)";
+    String anoymousBlock = "(^\\s*((DECLARE\\s+.*?)?(BEGIN\\s*.*?END;\\s*/\\s*$))|(DO\\s+LANGUAGE\\s+plpgsql\\s+\\$\\$.*?\\$\\$\\s*;\\s*$))";
+    String subQuery = "(^\\s*\\(\\s*SELECT.*?\\).*?;\\s*$)";
+    String cursor = "(^\\s*((DECLARE\\s+(\")?[a-zA-Z_][a-zA-Z0-9_]*(\")?\\s+CURSOR)|FETCH).*?;\\s*$)";
+    String transPattern = "(^\\s*(((ROLLBACK|RELEASE|SAVEPOINT)(\\s+.*?)?)|((END|COMMIT)(\\s+TRANSACTION)?)|((BEGIN|START)((\\s+(TRANSACTION|WORK))?(\\s+((ISOLATION\\s+.*?)|(READ\\s+WRITE)|(READ\\s+ONLY)|((NOT)?DEFERRABLE)))?)))\\s*;\\s*$)";
+    String selectFuction = "(^\\s*SELECT\\s+[a-zA-Z_][a-zA-Z0-9_]*\\(.*?\\$\\$.*?\\$\\$\\);\\s*$)";
+    String callFunction = "(^\\s*CALL\\s+[a-zA-Z_][a-zA-Z0-9_]*\\(.*?\\)\\s*;\\s*$)";
+    private Pattern sqlPattern;
+    public SqlPattern() {
+        StringBuilder stringBuilder = new StringBuilder(createFpPattern);
+        stringBuilder.append("|").append(generalCreatePattern).append("|").append(selectFuction).append("|")
+                .append(generalSqlPattern).append("|").append(callFunction).append("|")
+                .append(transPattern).append("|").append(subQuery).append("|").append(cursor).append("|").append(anoymousBlock);
+
+        sqlPattern = Pattern.compile(stringBuilder.toString(), Pattern.CASE_INSENSITIVE | Pattern.DOTALL | Pattern.MULTILINE);
+
+    }
+    public Matcher matcher(String str) {
+        return this.sqlPattern.matcher(str);
+    }
+}
