@@ -1,0 +1,73 @@
+/*
+测试目的：通过存储过程循环调用函数，验证是否存在内存膨胀。
+典型问题：DTS2024041120530
+
+使用说明：
+1、把"select timestamp_diff('secord22','2001-01-01','2001-01-01');" 替换为需要测试的语句
+2、如果看到内存持续增长，则说明存在内存膨胀
+3、在出错的情况下，更容易发生内存膨胀；建议结合代码实现，进行灰合测试
+
+参数说明：
+loop_cnt：循环执行的次数
+check_interval：每隔check_interval次，监控内存的增长情况
+
+调用样例：
+select verify_memory_leak(10000000,10000);
+
+使用限制：
+1、只支持集中式
+2、为了提升测试速度，只监控了整体的内存使用，在有后台并发任务的情况下，可能不准确
+
+TODO：支持分布式
+*/
+CREATE OR REPLACE FUNCTION verify_memory_leak(loop_cnt int default 100000000, check_interval int default 1000) 
+RETURNS int AS
+$$
+DECLARE
+   v_id int :=1;
+   
+   init_mem_used int :=0;
+   pre_mem_used int :=0;
+   curr_mem_used int :=0;
+BEGIN
+    if loop_cnt <= 1000000 then
+        loop_cnt := 1000000;
+    end if;
+    
+    if check_interval <= 0 then
+        check_interval := 1000;
+    end if;
+    
+	--统计初始内存
+    select memorymbytes into init_mem_used from gs_total_memory_detail where memorytype='dynamic_used_memory';
+    pre_mem_used := init_mem_used;
+	
+    while v_id <= loop_cnt loop        
+        begin
+            --替换为要测试的sql语句
+            select timestamp_diff('secord22','2001-01-01','2001-01-01');
+			
+        Exception     
+            when others then     
+                null;    
+                --raise notice '%',SQLERRM ; 
+        end;
+        
+        if v_id % check_interval = 0 then
+            select memorymbytes into curr_mem_used from gs_total_memory_detail where memorytype='dynamic_used_memory';
+            raise notice 'loop_cnt=%, pre_mem_used=%, curr_mem_used=%, increased_mem %MB, total increased memory=%MB',
+                  v_id,pre_mem_used,curr_mem_used,curr_mem_used-pre_mem_used,curr_mem_used-init_mem_used;
+            pre_mem_used := curr_mem_used;
+        end if;
+        v_id := v_id +1;
+    end loop;
+    RETURN v_id;
+Exception     
+    when others then         
+        raise notice '%',SQLERRM ;
+		RETURN 0-v_id;
+END;
+$$ LANGUAGE plpgsql;
+
+--调用样例
+select verify_memory_leak(10000000,10000);
