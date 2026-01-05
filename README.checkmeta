@@ -1,0 +1,138 @@
+/*
+ 使用场景:
+ case 1：故障测试后，校验cn之间元数据的一致性;可以用于分布式
+ case 2：升级后的集群与新安装的集群，元数据的兼容性;可以用于集中式、分布式
+ TO DO: cn与dn校验
+ TO DO: 不同database系统表之间的一致性，考虑兼容性的影响
+*/
+
+/*
+  适配原则：
+  1、保持完整，除非能解释就应该不一致，如：密码（加入盐值，不同的节点不一致）；
+  2、避免oid直接输出，分布式上不同节点的oid不一致，需要转化为对应的名字，如schema name、table name、 user name等
+  3、建立基线并稳定后，对不同的版本分别进行看护，定期同步版本上新增的列
+  4、逐步增加完善
+*/
+
+select 'pg_class';
+select case when c.oid < 16384 then c.oid else null end oid, ---oid 经常不一样，只匹配部分
+      relname,
+      nspname,
+      (select typname from pg_type t where t.oid = reltype) reltype,
+      reloftype,
+      (select usename from pg_user where relowner = usesysid) relowner,
+      (select amname from pg_am where oid = relam) as relam,
+      --relfilenode,
+      (select spcname from pg_tablespace ts where reltablespace = ts.oid) reltablespace, 
+      case when nspname='pg_catalog' then null else relpages end relpages, 
+      case when nspname='pg_catalog' then null else reltuples end reltuples,
+      case when c.oid < 16384 then null else  relallvisible end relallvisible,
+    --  reltoastrelid 
+   --reltoastidxid  ,
+   --reldeltarelid  ,
+   --reldeltaidx    ,
+   --relcudescrelid ,
+   --relcudescidx   ,
+      relhasindex,
+      relisshared,
+      relpersistence,
+      relkind,
+      relnatts,
+      relchecks,
+      relhasoids,
+      relhaspkey,
+      relhasrules,
+      relhastriggers,
+      relhassubclass,
+      relcmprs,
+      relhasclusterkey,
+      relrowmovement,
+      parttype,
+      --relfrozenxid,
+      relacl,
+      reloptions,
+      relreplident,
+     -- relfrozenxid64 , 
+     --relbucket,  暂时不比对    
+     relbucketkey,    
+     relminmxid       
+  from pg_class c, pg_namespace n
+ where c.relnamespace = n.oid
+   and nspname != 'pg_toast'   
+   and n.nspname not like 'pg_temp%'
+   and n.nspname not like 'pg_toast_temp%'
+   and nspname != 'cstore'
+   and relname not like 'mlog_%'
+   and relname not like 'matviewmap_%'
+ order by 1,relname, nspname, 6, 7, 8 desc
+ ;
+
+--pg_attribute
+--to do: convert sublink to join
+select 'pg_attribute';
+select n.nspname|| '.'|| case when relname like 'pg_toast_part_%' then 'pg_toast_part_xxx'
+    --(select ('pg_toast_part_'||p.relname) ::varchar(64) from pg_partition p where oid=right(c.relname,-14)::text::oid and )  --does not work for interval partition
+ when relname like 'pg_toast_%' then (select ('pg_toast_'||c1.relname) ::varchar(64) from pg_class c1 where oid=right(c.relname,-9)::text::oid)    
+ else relname end      attrelid,
+--relname,
+       attname,
+       typname       atttypid,
+       attstattarget,
+       attlen,
+       attnum,
+       attndims,
+       attcacheoff,
+       atttypmod,
+       attbyval,
+       attstorage,
+       attalign,
+       attnotnull,
+       atthasdef,
+       attisdropped,
+       attislocal,
+       attcmprmode,
+       attinhcount,
+       attcollation,
+       attacl,
+       attoptions,
+       attfdwoptions,
+       attinitdefval,
+       attkvtype,
+	   attidentity
+  from pg_class c join pg_namespace n on relnamespace=n.oid, pg_attribute a
+  left join pg_type t
+    on a.atttypid = t.oid
+ where a.attrelid = c.oid 
+ and relname not like 'pg_toast_%_index'
+ and n.nspname not like 'pg_temp%'
+ and n.nspname not like 'pg_toast_temp%'
+ order by 1, attnum, attname;
+
+ 
+--job shared
+select 'pg_job';
+select 
+ j.job_id               
+ --,current_postgres_pid 
+ ,log_user             
+ ,priv_user            
+ ,dbname               
+ ,node_name            
+ ,job_status           
+ --,start_date           
+ --,next_run_date        
+ ,failure_count        
+ ,interval             
+ --,last_start_date      
+ --,last_end_date        
+ --,last_suc_date        
+ --,this_run_date         
+ ,nspname 
+ , job_name           
+ ,end_date           
+ ,enable             
+ ,failure_msg 
+ ,what 
+from pg_job j left join pg_job_proc p on j.job_id=p.job_id
+order by 1,2
+;  
