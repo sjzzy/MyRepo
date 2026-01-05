@@ -1,0 +1,383 @@
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+public class LargeTuple extends Thread {
+	static String url = "jdbc:gaussdb://8.92.4.221:13003,8.92.4.222:13003,8.92.4.223:13003/tpcc?batchMode=on&tenantName=tenantA&connectMode=auth&tenantPassword=gauss@567&prepareThreshold=1&fetchsize=2";
+	static String user = "test";
+	static String passwd = "gs_123456";
+	static String mode = "upsert";
+	static int rollbackPct=1;
+
+	Connection conn = null;
+	String upsertSQL = null;
+	PreparedStatement upsert[] = new PreparedStatement[table_num];
+	PreparedStatement update = null;
+
+
+
+	String deleteSQL = "delete from large_%d where id between ? and ? ";
+	PreparedStatement delete[] = new PreparedStatement[table_num];
+
+	Statement stmt = null;
+	int id = 0;
+
+	static final int interval = 3000;
+	private static SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+	volatile static long max_id = 1000000;
+	static volatile int col_num = 1000;
+	final static int table_num = 1;
+	final static int transaction_size = 1;
+	static volatile TEXT_GENERATE_MODE generate_mode = TEXT_GENERATE_MODE.EXPAND;
+
+	enum TEXT_GENERATE_MODE {RANDOM,EXPAND};
+
+	final static AtomicLong counter = new AtomicLong();
+	
+
+	public static void main(String[] args) {
+		final String usage="threads col_num text_generate_mode max_id url user password mode rollbackPct";
+		final String readme="text_generate_mode: EXPAND | RANDOM \n"
+				+ "mode: upsert | update_random_column";
+		if(args.length != usage.split(" ").length) {
+			System.out.println(usage);
+			System.out.println(readme);
+			return ;
+		}
+		
+		int threads = 500;
+		try {
+			threads = Integer.parseInt(args[0]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default threads:" + threads + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		try {
+			col_num = Integer.parseInt(args[1]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default col_num:" + col_num + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		System.out.println("col_num="+col_num +", threads" + threads);
+		if(args[2]!=null && args[2].equalsIgnoreCase("RANDOM"))
+			generate_mode=TEXT_GENERATE_MODE.RANDOM;
+		else
+			generate_mode = TEXT_GENERATE_MODE.EXPAND;
+		
+		try {
+			max_id = Long.parseLong(args[3]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default max_id:" + max_id + "\n detail:"
+					+ e.getMessage());
+		}
+		
+
+		url= args[4];
+		user = args[5];
+		passwd = args[6]; 
+		mode = args[7]; 
+		try {
+			rollbackPct = Integer.parseInt(args[8]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default max_id:" + max_id + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		for (int i = 0; i < threads; i++) {
+			new LargeTuple(i).start();
+		}
+	}
+
+	public LargeTuple(int i) {
+		id = i;
+		
+		upsertSQL = "insert into large_%d values(?";
+		for (int c = 0; c < col_num; c++) {
+			upsertSQL = upsertSQL + " ,?";
+		}
+		upsertSQL = upsertSQL + ") on duplicate key update  ";
+		if(generate_mode==TEXT_GENERATE_MODE.EXPAND) {
+			for (int c = 0; c < col_num; c++) {
+				if (c == 0)
+					upsertSQL = upsertSQL + String.format(" c%d = c%d||values(c%d)", c, c, c);
+				else
+					upsertSQL = upsertSQL + String.format(", c%d = c%d||values(c%d)", c, c, c);
+			}
+		}else {
+			//TEXT_GENERATE_MODE==TEXT_GENERATE_MODE.RANDOM
+			for (int c = 0; c < col_num; c++) {
+				if (c == 0)
+					upsertSQL = upsertSQL + String.format(" c%d = values(c%d)", c, c);
+				else
+					upsertSQL = upsertSQL + String.format(", c%d = values(c%d)", c, c);
+			}
+		}
+
+	}
+
+	private void initDB() {
+		conn = this.connGaussdb(url, user, passwd);
+		try {
+			for (int i = 0; i < table_num; i++) {
+				upsert[i] = conn.prepareStatement(String.format(upsertSQL, i));
+				delete[i] = conn.prepareStatement(String.format(deleteSQL, i));
+			}
+			stmt = conn.createStatement();
+			//update = conn.createStatement();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+	private Connection connGaussdb(String url, String user, String passwd) {
+		Connection conn = null;
+		String driver = "com.huawei.gaussdb.jdbc.Driver";
+		// String driver = "org.postgresql.Driver";
+
+		while (conn == null) {
+			try {
+				Class.forName(driver).newInstance();
+				conn = DriverManager.getConnection(url, user, passwd);
+				conn.setAutoCommit(false);
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					Thread.sleep(3000);
+				} catch (InterruptedException e1) {
+					// TODO Auto-generated catch block
+					e1.printStackTrace();
+				}
+			}
+		}
+
+		return conn;
+	}
+
+	public void run() {
+		if (id == 0)
+			monitor();
+		if(mode.equalsIgnoreCase("upsert"))
+			upsert();
+		else
+			update_random_column();
+		
+//		if (id % 4 != 0)
+//			upsert();
+//		else
+//			delete();
+	}
+
+
+	public void monitor() {
+		long num_xacts_old = 0L;
+		long num_xacts_new = 0L;
+		while (true) {
+			num_xacts_old = num_xacts_new;
+			try {
+				Thread.sleep(interval);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+			num_xacts_new = counter.get();
+			System.out.println("tps=" + (num_xacts_new - num_xacts_old) * 1000L / interval + "\t,total_xacts="
+					+ num_xacts_new + "\t," + sdf.format(new Date()));
+		}
+	}
+
+	//长度持续变长，大元组，验证膨胀，行迁移，索引最大长度
+	//随机长度，null
+	public void upsert() {
+		initDB();
+		Random random = new Random();
+		while (true) {
+			try {
+				for (int k = 0; k < (transaction_size); k++) {
+					int index = random.nextInt(table_num);
+					long id = random.nextLong()%max_id;
+					if(id<0)
+						id= 0- id;
+					
+					upsert[index].setLong(1, id);
+					for (int x = 1; x <= col_num; x++) {
+						if(generate_mode == TEXT_GENERATE_MODE.RANDOM)
+							upsert[index].setString(x+1, random.nextLong()+"");
+						else
+							//TEXT_GENERATE_MODE==TEXT_GENERATE_MODE.EXPAND
+							upsert[index].setString(x+1,"," + x );
+					}
+				
+					
+					upsert[index].addBatch();
+					
+					if(table_num>1)
+						upsert[index].executeBatch();
+				}
+				
+				
+				if(table_num<=1) {
+					//System.out.println(upsert[0].toString());
+					upsert[0].executeBatch();
+				}
+				
+				if (random.nextInt(10000) > rollbackPct)
+					conn.commit();
+				else
+					conn.rollback();
+				counter.incrementAndGet();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					stmt.execute("select 1");
+				} catch (Exception e2) {
+					freeConn();
+					initDB();
+				}
+			}
+		}
+	}
+	
+	//format: UPDATE ; SELECT
+	private String generateUpdateSQL(Random random) {
+		StringBuffer sb  = new StringBuffer();
+		int index = random.nextInt(table_num);
+		sb = sb.append(String.format("update large_%d set id=id ", index ));
+		
+		List<Integer> numbers = IntStream.rangeClosed(0, col_num - 1)
+                .boxed()
+                .collect(Collectors.toList());
+		// 使用Fisher-Yates算法部分洗牌(仅前50个元素)
+		for (int i = 0; i < col_num; i++) {
+			int j = i + random.nextInt(col_num - i);
+			Collections.swap(numbers, i, j);
+		}
+		
+		for(int i=0;i<numbers.size();i++) {
+			sb.append(String.format(" ,c%d = ", numbers.get(i)));
+			if(random.nextInt(100)<10)
+				sb.append("null");
+			else
+				sb.append("'" + random.nextLong() + "AAAAAAAAAAAAAAAA" + "'");
+		}
+		long id= random.nextLong()%max_id;
+		if(id<0)
+			id=0-id;
+		sb.append(String.format(" where id = %d ; ", id));
+		
+		//select
+		sb.append(String.format(" select * from large_%d where id = %d", index,id));
+		
+		return sb.toString();
+	}
+	//长度持续变长，大元组，验证膨胀，行迁移，索引最大长度
+		//随机长度，null
+	public void update_random_column() {
+		initDB();
+		Random random = new Random();
+		while (true) {
+			try {
+				for (int k = 0; k < (transaction_size); k++) {
+					String sql[]=generateUpdateSQL(random).split(" ; ");
+					update = conn.prepareStatement(sql[0]);
+					int ret =  update.executeUpdate();
+					if(ret !=1)
+						System.out.println("incorrent result "+ ret+ ":" + update.toString());
+					update.close();
+					if(transaction_size==1) {
+						if (random.nextInt(10000) > rollbackPct)
+							conn.commit();
+						else
+							conn.rollback();
+					}
+					
+					ResultSet rs = stmt.executeQuery(sql[1]);
+					if(!rs.next())
+						System.out.println("incorrent result: "+ 0+ ":" + sql[1]);
+					else {
+						if(rs.next())
+							System.out.println("incorrent result: >=2"+ ":" + sql[1]);
+					}
+					rs.close();					
+				}								
+				if(transaction_size>1) {						
+					if (random.nextInt(10000) > rollbackPct)
+						conn.commit();
+					else
+						conn.rollback();
+				}
+				counter.incrementAndGet();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					stmt.execute("select 1");
+				} catch (Exception e2) {
+					freeConn();
+					initDB();
+				}
+			}
+		}
+	}
+
+	private void freeConn() {
+		try {
+			if (conn != null)
+				conn.close();
+		} catch (Exception localException) {
+		}
+		conn = null;
+	}
+	
+	public void delete() {
+		initDB();
+		Random random = new Random();
+		
+		while (true) {
+			try {
+				for (int k = 0; k < (transaction_size); k++) {
+					int index = random.nextInt(table_num);
+
+					long range = random.nextLong()%max_id;
+					if(range<0)
+						range=0-range;
+					delete[index].setLong(1, range);
+					delete[index].setLong(2, range + 2);
+					
+					delete[index].addBatch();
+					if(table_num>1)
+						delete[index].executeBatch(); 
+				}
+				
+				if(table_num<=1)
+					delete[0].executeBatch();
+				
+				if (random.nextInt(1000) > 1)
+					conn.commit();
+				else
+					conn.rollback();
+				counter.incrementAndGet();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					stmt.execute("select 1");
+				} catch (Exception e2) {
+					freeConn();
+					initDB();
+				}
+			}
+		}
+	}
+
+}
