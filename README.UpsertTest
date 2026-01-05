@@ -1,0 +1,352 @@
+import java.sql.PreparedStatement;
+import java.sql.Statement;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+
+//jdbc:postgresql://127.0.0.1:6500/postgres?allowEncodingChanges=true 10000 300 test gs_123456 false utf8 false 10 postgres
+//jdbc:oracle:thin:@100.185.178.213:1521:orcl 10000 100 t t false utf8 false 10 oracle
+
+public class UpsertTest extends Thread {
+	private static volatile boolean needStop = false; // use dirty read
+
+	private static String dbType = "oracle";
+
+	private static AtomicLong count2 = new AtomicLong(0);
+
+	private Connection conn;
+	private String url = null;
+	private Statement stmt = null;
+	private PreparedStatement transStmt = null;
+
+	private boolean isChecker = false;
+	private String username = null;
+	private String password = null;
+	private long threadId = 0;
+	private String node_name = null;
+
+	private static int transaction_size = 1; // effect rows
+	private static boolean batchMode = true;
+
+	private static long max_id = 10000;
+
+	public static void setDbType(String db) {
+		assert (db != null);
+		dbType = db;
+	}
+
+	private UpsertTest(long id, String v_url, String user, String pwd) {
+		max_id = id;
+		isChecker = false;
+
+		url = v_url;
+		username = user;
+		password = pwd;
+	}
+
+	private UpsertTest(String v_url, String user, String pwd) {
+		isChecker = true;
+
+		url = v_url;
+		username = user;
+		password = pwd;
+	}
+
+	// 初始化db资源
+	private boolean initDBHandler() {
+		try {
+			// System.out.println(this.getId() + ":" + url);
+			conn = getConn(url);
+			if (conn == null)
+				return false;
+
+			node_name = null;
+			if (transaction_size <= 1 || batchMode)
+				conn.setAutoCommit(true);
+			else
+				conn.setAutoCommit(false);
+			stmt = conn.createStatement();
+
+			if (dbType.equalsIgnoreCase("gaussdb")) {
+				// stmt.execute("set current_schema=acid;");
+				ResultSet rs = stmt.executeQuery("select pgxc_node_str()");
+				if (rs.next())
+					node_name = rs.getString(1);
+				rs.close();
+			} else {
+				node_name = dbType;
+			}
+			StringBuffer sb = new StringBuffer(
+					"insert into t_rm (mac, gridid, utc, lat,lon, rssi, updateCnt, provider) VALUES ");
+			for (int k = 0; k < transaction_size; k++) {
+				if (k != 0)
+					sb.append(",");
+				sb.append("(?,?,?,?,?,?,?,?)");
+				if (!batchMode)
+					break;
+			}
+			sb.append(
+					"ON DUPLICATE KEY UPDATE  utc=excluded.utc, lat=excluded.lat, lon=excluded.lon, rssi=excluded.rssi, updateCnt=excluded.updateCnt, provider=excluded.provider");
+
+			transStmt = conn.prepareStatement(sb.toString());
+			return true;
+		} catch (Exception e) {
+			System.out.println("refresh conn: " + e.getMessage());
+			return false;
+		}
+	}
+
+	public void check() {
+		long pre = count2.get();
+		long curr = 0;
+		for (long i = 0; i < 1000000000 && !needStop; i++) {
+			try {
+				Thread.sleep(3 * 1000);
+				curr = count2.get();
+				System.out.println("tps = " + (curr - pre) / 3 + ",total = " + curr + ", batch_size=" + transaction_size
+						+ ", " + System.currentTimeMillis());
+				pre = curr;
+			} catch (Exception e) {
+
+			}
+		}
+	}
+
+	private HashSet<Integer> getGID(Random rand) {
+		HashSet<Integer> result = new HashSet<Integer>();
+		while (result.size() < transaction_size)
+			result.add(rand.nextInt(2000) + 1);
+
+		return result;
+	}
+
+	public void run() {
+		Random rand = new Random(this.getId());
+
+		threadId = this.getId();
+		if (!initDBHandler()) {
+			System.out.println(this.getId() + " exits " + new Date());
+			return;
+		}
+
+		if (isChecker) {
+			check();
+			return;
+		}
+
+		long seq;
+		int ret = 0;
+
+		for (seq = 0; seq < 100000000 && !needStop; seq++) {
+			try {
+				final int table_columns = 8;
+				long mac = rand.nextLong();
+				if (mac < 0)
+					mac = 0 - mac;
+				mac = mac % max_id + 1;
+				HashSet<Integer> gidSet = getGID(rand);
+				int k = 0;
+				if (batchMode) {
+					/*
+					 * insert into t_rm values(),(),() on duplicate key update xx
+					 */
+					for (Integer gid : gidSet) {
+						transStmt.setLong(k * table_columns + 1, mac);
+						transStmt.setLong(k * table_columns + 2, gid.intValue());
+						transStmt.setLong(k * table_columns + 3, gid.intValue());
+						transStmt.setDouble(k * table_columns + 4, gid.intValue() % 100);
+						transStmt.setDouble(k * table_columns + 5, gid.intValue() % 100);
+						transStmt.setInt(k * table_columns + 6, gid.intValue());
+						transStmt.setInt(k * table_columns + 7, 1);
+						transStmt.setInt(k * table_columns + 8, gid.intValue());
+						k++;
+					}
+
+					ret = transStmt.executeUpdate();
+					if (ret != transaction_size) {
+						needStop = true;
+						throw new Exception("incorrect insert:" + ret + ":" + transStmt.toString() + ",mac=" + mac);
+					}
+				} else {
+					/*
+					 * start transaction; 
+					 * insert into t_rm values() on duplicate key update xx ;
+					 * insert into t_rm values() on duplicate key update xx ;
+					 * insert into t_rm values() on duplicate key update xx ;
+					 * commit;
+					 */
+					for (Integer gid : gidSet) {
+						transStmt.setLong(1, mac);
+						transStmt.setLong(2, gid.intValue());
+						transStmt.setLong(3, gid.intValue());
+						transStmt.setDouble(4, gid.intValue() % 100);
+						transStmt.setDouble(5, gid.intValue() % 100);
+						transStmt.setInt(6, gid.intValue());
+						transStmt.setInt(7, 1);
+						transStmt.setInt(8, gid.intValue());
+						transStmt.addBatch();
+					}
+
+					int ret2[] = transStmt.executeBatch();
+					// for(int i=0;i<transaction_size;i++) {
+					if (ret2[0] != transaction_size) {
+						System.out.println(ret2[0]);
+						needStop = true;
+						throw new Exception("incorrect insert:" + ret + ":" + transStmt.toString() + ",mac=" + mac);
+					}
+					// }
+					if (transaction_size > 1)
+						conn.commit();
+				}
+
+				count2.getAndIncrement();
+			} catch (Exception e2) {// rollback or commit failed
+				System.out.println("error: " + new Date() + "," + e2.getMessage());
+				e2.printStackTrace();
+				try {
+					conn.rollback();
+				} catch (Exception e) {
+				}
+
+				// if conn is invalid,refresh it
+				try {
+					stmt.executeQuery("select 1 ");
+				} catch (Exception e) {
+					freeConn();
+					System.out.println(new Date() + ", will refresh conn: " + e.getMessage());
+					// conn is invalid,refresh it
+					try {
+						while (!initDBHandler()) {
+							System.err.print(new Date() + ", thread " + threadId + " refresh conn failed");
+						}
+						Thread.sleep(1000 * 3);// 3s
+					} catch (Exception se) {
+						System.out.println(new Date() + ", refresh conn: " + se.getMessage());
+					} catch (Throwable t) {
+						System.out.println(new Date() + "thread " + threadId + " will exit, due to " + t.getMessage());
+						t.printStackTrace();
+						break;
+					}
+				}
+			} catch (Throwable t) {
+				System.out.println(new Date() + "thread " + threadId + " will exit, due to " + t.getMessage());
+				t.printStackTrace();
+				break;
+			}
+		}
+
+		System.out.println(new Date() + "thread " + threadId + " will exit: needstop=" + needStop + ",seq=" + seq);
+
+		try {
+			stmt.close();
+		} catch (SQLException e) {
+		}
+
+		try {
+			transStmt.close();
+		} catch (SQLException e) {
+		}
+
+		freeConn();
+	}
+
+	public static void main(String[] args) {
+		long id = 10000;
+		int parallel = 1000;
+		String username = null;
+		String password = null;
+		String urlArray[] = null;
+		String usage = "url[,url] max_id parallel username password db_type transaction_size batch_mode";
+		if (args.length != usage.split(" ").length) {
+			System.out.println("version 1.1\nusage:" + usage);
+			return;
+		}
+
+		urlArray = args[0].split(",");
+		try {
+			id = Long.parseLong(args[1]);
+		} catch (Exception e) {
+			System.out.println(
+					"error occured while parsing parameter, use default max_id:" + id + "\n detail:" + e.getMessage());
+		}
+
+		try {
+			parallel = Integer.parseInt(args[2]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default parallel:" + parallel + "\n detail:"
+					+ e.getMessage());
+		}
+
+		username = args[3];
+		password = args[4];
+		setDbType(args[5]);
+		transaction_size = Integer.parseInt(args[6]);
+		batchMode = Boolean.parseBoolean(args[7]);
+		System.out.println("urls=" + args[0]);
+		System.out.println("id=" + id);
+		System.out.println("parallel=" + parallel);
+		System.out.println("username=" + username);
+		System.out.println("password=" + password);
+		System.out.println("dbtype=" + args[5]);
+		System.out.println("transaction_size=" + transaction_size);
+		System.out.println("batch_mode=" + batchMode);
+
+		int index = 0;
+
+		for (int i = 0; i <= parallel; i++) {
+			if (i == 0) {
+				new UpsertTest(urlArray[0], username, password).start();
+			} else {
+				index = i % urlArray.length;
+				new UpsertTest(id, urlArray[index], username, password).start();
+				try {
+					Thread.sleep(10);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+			}
+		}
+	}
+
+	public void freeConn() {
+		try {
+			if (conn != null)
+				conn.close();
+		} catch (Exception e) {
+		}
+		conn = null;
+	}
+
+	public Connection getConn(String url) {
+		try {
+			if (dbType.equalsIgnoreCase("oracle")) {
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+			} else if (dbType.equalsIgnoreCase("postgres")) {
+				Class.forName("org.postgresql.Driver");
+			} else if (dbType.equalsIgnoreCase("gaussdb")) {
+				Class.forName("com.huawei.gauss200.jdbc.Driver");
+			} else {
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+			}
+		} catch (ClassNotFoundException e) {
+			System.out.println("error, can not find driver");
+			e.printStackTrace();
+			return null;
+		}
+
+		Connection con = null;
+		try {
+			con = DriverManager.getConnection(url, username, password);
+		} catch (SQLException e) {
+			System.out.println("error, connect failed: " + url);
+			e.printStackTrace();
+		}
+
+		return con;
+	}
+}
