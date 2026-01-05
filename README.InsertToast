@@ -1,0 +1,57 @@
+--构造长事务，向toast表中插入数据
+--用法：select insert_toast(interval '1s');   
+--语义：对于单行执行超过1s的进行打印，支撑问题分析
+ 
+CREATE or replace function insert_toast(v_timeout interval default interval '1s')     
+--usage: select insert_toast(interval '1s');    
+RETURNS int8        
+LANGUAGE plpgsql NOT SHIPPABLE  AS     
+$$     
+DECLARE    
+    v_id int := 0;    
+    v_commit int8 :=0;     
+    v_rollback int8 :=0;      
+    v_max int8 :=0;      
+    v_start timestamp;     
+    v_end timestamp;       
+    v_count int8 :=0;      
+    cur cursor for select a from toast where a >0 order by a;     
+BEGIN         
+    open cur;     
+    select max(a),count(*) into v_max,v_count from toast where a > 0;     
+    
+    raise notice 'max= %, count= %',v_max,v_count;    
+    loop  
+        begin     
+            fetch cur into v_id;     
+            exit when cur%notfound;   
+			
+            select clock_timestamp() into v_start;
+            insert into toast values(v_max+ v_id, (v_max+ v_id) %2 );         
+            v_commit := v_commit+1;             
+            commit;     
+            select clock_timestamp() into v_end;   
+			
+            if(v_end-v_start > v_timeout) then     
+                raise notice 'commit= %, rollback= %,id=%, time=%',v_commit,v_rollback,v_id,(v_end-v_start);
+            end if;    
+            select clock_timestamp() into v_start;         
+        exception        
+             when others then         
+             raise notice 'inner err:%,commit=%,rollback=%',SQLERRM,v_commit,v_rollback;     
+             rollback;    
+             v_rollback :=v_rollback+1;    
+        end;    
+    end loop;    
+    commit;    
+	return v_max+ v_id;
+exception        
+    when others then         
+        raise notice 'outter err:%,commit=%,rollback=%',SQLERRM,v_commit,v_rollback;     
+        rollback;    
+		return v_max+ v_id;
+END;     
+$$;      
+
+    
+select insert_toast(interval '1s');    
