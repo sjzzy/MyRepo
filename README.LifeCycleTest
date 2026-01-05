@@ -1,0 +1,684 @@
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+//gaussdb jdbc:gaussdb://10.185.180.166:29900,10.185.180.168:29900,10.185.180.172:29900/tpcc?targetServerType=master&prepareThreshold=5&batchMode=on&fetchsize=2&loggerLevel=off&loggerFile=./gsjdbc.log 10 test gs_123456 1000000 30 false
+//oracle jdbc:oracle:thin:@10.90.58.120:1521:cdb1 10 test gs_123456 1000000 30 false
+
+/*
+create sequence LifeCycleTest_seq cache 100;
+drop table if exists LifeCycleTest;
+create table LifeCycleTest (
+a1 int8, 
+a2 int8, 
+b numeric,
+
+c1 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c2 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c3 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c4 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c5 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c6 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c7 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c8 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c9 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c10 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c11 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c12 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c13 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c14 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c15 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c16 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c17 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c18 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c19 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c20 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+ts timestamp(6) default now(),
+id int8 default nextval('LifeCycleTest_seq')) with (storage_type=USTORE);
+create unique index LifeCycleTest_idx on LifeCycleTest(id);
+create unique index LifeCycleTest_idx2 on LifeCycleTest(a2,a1);
+create index LifeCycleTest_idx3 on LifeCycleTest(b);
+
+
+---非生成列
+create table LifeCycleTest (
+a1 number, 
+a2 number, 
+b numeric,
+c1 varchar2(1000) ,
+c2 varchar2(1000) ,
+c3 text ,
+c4 varchar2(1000) ,
+c5 varchar2(1000) ,
+c6 text ,
+c7 varchar2(1000) ,
+c8 varchar2(1000) ,
+c9 text ,
+c10 varchar2(1000) ,
+c11 varchar2(1000) ,
+c12 text ,
+c13 varchar2(1000) ,
+c14 varchar2(1000) ,
+c15 text ,
+c16 varchar2(1000) ,
+c17 varchar2(1000) ,
+c18 text ,
+c19 varchar2(1000) ,
+c20 varchar2(1000) ,
+ts timestamp(6) default now(),
+id number default LifeCycleTest_seq.nextval) ;
+create unique index LifeCycleTest_idx on LifeCycleTest(id);
+create unique index LifeCycleTest_idx2 on LifeCycleTest(a2,a1);
+create index LifeCycleTest_idx3 on LifeCycleTest(b);
+
+
+-----interval partition
+
+create sequence LifeCycleTest_seq cache 100;
+drop table if exists LifeCycleTest cascade;
+create table LifeCycleTest (
+a1 int8, 
+a2 int8, 
+b numeric,
+
+c1 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c2 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c3 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c4 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c5 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c6 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c7 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c8 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c9 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c10 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c11 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c12 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c13 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c14 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c15 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c16 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c17 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c18 text GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c19 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+c20 varchar(1000) GENERATED ALWAYS AS (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) STORED,
+ts timestamp(6) default now(),
+id int8 default nextval('LifeCycleTest_seq')) with (storage_type=USTORE)
+partition by range(ts) INTERVAL ('10 minutes')
+( PARTITION p1 VALUES LESS THAN ('2023-11-30 00:00:00'));
+
+create unique index LifeCycleTest_idx on LifeCycleTest(id) global;
+create unique index LifeCycleTest_idx2 on LifeCycleTest(a2,a1) global;
+create index LifeCycleTest_idx3 on LifeCycleTest(b) global;
+
+
+
+
+
+CREATE OR REPLACE SYNONYM lc for LifeCycleTest;
+
+
+create or replace view lcv as select a1,a2,b,id from LifeCycleTest where 
+c1!= (((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c2 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c3 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c4 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c5 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c6 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c7 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c8 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c9 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c10 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c11 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c12 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c13 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c14 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c15 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c16 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c17 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c18 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c19 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) or 
+c20 !=(((b)::text || 'AAAAAAAAAAAAAAAAAAAAAAAA'::text)) ;
+
+*/
+
+/*
+ * 校验数据
+drop table check_lc_result_temp;
+create  table check_lc_result_temp(a1 bigint, a2 bigint,
+va1 bigint, va2 bigint,ts timestamp(6) default now()); 
+
+CREATE OR REPLACE FUNCTION public.check_lifecycletest(p_a1 int , p_a2 int8 , p_readOnly boolean)
+RETURNS void
+LANGUAGE plpgsql
+AUTHID DEFINER NOT FENCED NOT SHIPPABLE
+AS $function$
+DECLARE
+  int_max int8 := power(2,31) -1;
+  v_cnt int8 :=0;
+  v_a1 int8 :=int_max + 1::int8;
+  v_a2 int8 :=1;
+  
+  c_a1 int8 :=1;
+  c_a2 int8 :=1;
+  c_v_a1 int8 :=1;
+  c_v_a2 int8 :=1;
+  
+BEGIN
+  if not p_readOnly then 
+    delete from check_lc_result_temp;
+    commit;
+  end if;
+  
+  WHILE v_a1 <= p_a1::int8 + (int_max)::int8 loop
+    WHILE v_a2 <= p_a2 loop
+       if p_readOnly then
+          select a1, a2,v_a1,v_a2 into c_a1,c_a2,c_v_a1,c_v_a2 from (select * from (select a1, a2,v_a1,v_a2 from lifecycletest where a1=v_a1 and a2= v_a2 union select -v_a1,-v_a2,-v_a1,-v_a2) v1 order by 1 desc limit 1) v2;
+		  if (c_a1 != c_v_a1 or c_a2 != c_v_a2 or c_a1 != v_a1 or c_a2 != v_a2) and c_a1 >0 then
+		    raise EXCEPTION 'bad results ,a1=%,a2=%,v_a1=%,v_a2=%',c_a1,c_a2,v_a1,v_a2;
+		  end if;
+       else
+         insert into check_lc_result_temp select a1, a2,v_a1,v_a2 from lifecycletest where a1=v_a1 and a2= v_a2;
+	     select count(*) into v_cnt from check_lc_result_temp where a1!=v_a1 or a2 != v_a2 or a1 !=va1 or a2 !=va2;
+	     if v_cnt != 0 then
+	       commit;
+           raise EXCEPTION 'bad results ,v_cnt=%,%,%',v_cnt,v_a1,v_a2;
+	     end if;
+	     
+	     delete from check_lc_result_temp;
+	     select count(*) into v_cnt from check_lc_result_temp;
+	     if v_cnt != 0 then
+	       commit;
+           raise EXCEPTION 'bad results v_cnt=%',v_cnt;
+	     end if;
+	     commit;
+	   end if;
+	   v_a2 := v_a2 +1;
+	end loop;
+	v_a1 := v_a1 +1;
+  end loop;
+exception
+	 when others then
+--		delete from check_lc_result_temp;
+--	    select count(*) into v_cnt from check_lc_result_temp;
+--		commit;
+		raise EXCEPTION '%',SQLERRM;
+END;
+$function$;
+
+
+select check_lifecycletest(600, 1000000,true);
+
+
+ */
+
+//todo: 执行一轮次，增加一行记录
+
+public class LifeCycleTest extends Thread {
+	private long id = 0;
+	
+	private Connection conn = null;
+	private Random r = new Random();
+	private Statement checkStmt = null;
+	private Statement execStmt = null;
+
+	private PreparedStatement upsertStmt = null;
+	private PreparedStatement insertStmt = null;
+
+	private PreparedStatement deleteStmt1 = null;
+	private PreparedStatement deleteStmt2 = null;
+	private PreparedStatement selectStmt = null;
+
+	private volatile OP op ;
+
+
+	private static int parallel = 1000;
+	private static String dbType = "postgres";
+	private static String url = null;
+	private static String username = null;
+	private static String password = null;
+	private static int batchSize=1000000;
+	private static int loopTimes=30000;
+	private static boolean useGenerateColumn=true;
+	private static String runMode="select";
+	private static int commitPct=70;
+
+
+	private static String checkSQL = null;
+	
+	private SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+	private static AtomicLong count2 = new AtomicLong(0L);
+
+	public LifeCycleTest(int i) {
+		this.id = (long)Integer.MAX_VALUE + i;		
+		try {
+			if (dbType.equalsIgnoreCase("oracle")) {
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+			}
+			else if (dbType.equalsIgnoreCase("postgres"))
+				Class.forName("org.postgresql.Driver");
+			else if (dbType.equalsIgnoreCase("gaussdb"))
+				Class.forName("com.huawei.gaussdb.jdbc.Driver");
+			else
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+		} catch (ClassNotFoundException e) {
+			e.printStackTrace();
+			System.exit(-1);
+		}
+		this.op=OP.UPSERT;
+	}
+	
+	public void setOP(OP o) {
+		this.op=o;
+	}
+	
+	public boolean initDB() {
+		while(true) {
+			this.conn = getConn(url, username, password);
+			assert(conn != null);
+			try {
+				upsertStmt = this.conn.prepareStatement(
+						"insert into LifeCycleTest(a1,a2,b,ts) values(?,?,?,?) on duplicate key update ts=excluded.ts,b=EXCLUDED.b+b");
+				if(useGenerateColumn)
+					insertStmt = conn.prepareStatement("insert into LifeCycleTest values(?,?,?)");
+				else {
+					String SQL="insert into LifeCycleTest(a1 ,a2 ,b ,c1 ,c2 ,c3 ,c4 ,c5 ,c6 ,c7 ,c8 ,c9 ,c10 ,c11 ,c12 ,c13 ,c14 ,c15 ,c16 ,c17 ,c18 ,c19 ,c20) values(?,?,?";
+					for(int i=1;i<=20;i++)
+						SQL = SQL + ",?";
+					SQL=SQL + ")";	
+					System.out.println(SQL);
+					insertStmt = conn.prepareStatement(SQL);
+				}
+				deleteStmt1 = this.conn.prepareStatement(
+						"delete from LifeCycleTest where a1= ? and a2 = ? ");
+				deleteStmt2 = this.conn.prepareStatement("delete from LifeCycleTest where id=?");
+				selectStmt = conn.prepareStatement("select a1, a2 from lifecycletest where a1=? and a2= ?");
+				checkStmt =  conn.createStatement();
+				execStmt = conn.createStatement();
+			} catch (SQLException e) {
+				e.printStackTrace();
+				freeConn();
+				try {
+					Thread.sleep(1000);
+				} catch (InterruptedException e1) {
+					e1.printStackTrace();
+				}
+				continue;				
+			}
+			
+			return true;
+		}
+	}
+	
+	public void doOneTask(String taskName, int times, int sleepTime) {
+		long startTime = 0;
+		long endTime =  0;
+		startTime = System.currentTimeMillis();
+		
+		if(id==(long)Integer.MAX_VALUE + 1)
+			System.out.println(taskName + " test " + times + "  start , " + this.getId() + ", " + sdf.format(new Date()));
+		if(taskName.equalsIgnoreCase("upsert"))
+			upsert();
+		else if(taskName.equalsIgnoreCase("upsert2"))
+			upsert2();
+		else if(taskName.equalsIgnoreCase("delete1"))
+			delete1();
+		else if (taskName.equalsIgnoreCase("select"))
+			select();
+		else if (taskName.equalsIgnoreCase("select2"))
+			select2();
+		else if (taskName.equalsIgnoreCase("insert"))
+			insert();
+		else
+			System.out.println(taskName + " not supported, skipped");
+		
+		endTime = System.currentTimeMillis();
+		if(id==(long)Integer.MAX_VALUE + 1)
+			System.out.println(" test finish , " + this.getId() + ", " +  (endTime - startTime)/1000 + "s");	
+		if(sleepTime>0) {
+			try {
+				Thread.sleep(sleepTime*1000);
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+	}
+	
+	public void run() {
+		initDB();
+		
+		if(op == OP.MONITOR) {
+			monitor();
+			return;
+		}
+		
+		String task[]=runMode.split(",");
+		for(int i=0;i<loopTimes;i++) {
+			for(int k=0;k<task.length;k++) {
+				doOneTask(task[k],i,0);
+			}
+		}
+		
+	}
+	
+	private void refreshConnIfNecessary() {
+		if(conn!=null) {
+			try {
+				checkStmt.executeQuery(checkSQL);
+				return ;
+			}catch(SQLException se) {
+				System.out.println("check stmt," + se.getMessage());
+				freeConn();
+			}
+		}
+		initDB();
+	}
+	
+	private void refreshConn() {
+		freeConn();
+		initDB();
+	}
+
+	public String genDate() {
+		Date d = new Date(r.nextInt(100000000) + 1730000l*1000*1000);
+		return sdf.format(d);
+	}
+	
+	public void upsert2() {
+		for (int i = 1; i <= batchSize; i++) {
+			try {
+				int ret = execStmt.executeUpdate(String.format("insert into LifeCycleTest(a1,a2,b,ts) values(%d,%d,%d,'%s') on duplicate key update ts=excluded.ts,b=EXCLUDED.b+b",
+						id,i,r.nextLong(), genDate()));
+				if (ret != 1) {
+					System.err.println("bad upsert , stmt:" + upsertStmt.toString());
+					System.exit(-1);
+				}
+				if (this.r.nextInt(100) < commitPct)
+					this.conn.commit();
+				else
+					this.conn.rollback();
+				count2.incrementAndGet();
+				if(r.nextInt(100)<5)
+					refreshConn();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					this.conn.rollback();
+				} catch (Exception e2) {
+					e2.printStackTrace();
+				}
+				refreshConnIfNecessary();
+			}
+		}
+	}
+	
+	public void upsert() {
+		for (int i = 1; i <= batchSize; i++) {
+			try {
+				upsertStmt.setLong(1, id);
+				upsertStmt.setLong(2, i);
+				upsertStmt.setLong(3, r.nextLong());
+				upsertStmt.setString(4, genDate());
+				if (upsertStmt.executeUpdate() != 1) {
+					System.err.println("bad upsert , stmt:" + upsertStmt.toString());
+					System.exit(-1);
+				}
+				if (this.r.nextInt(100) < commitPct)
+					this.conn.commit();
+				else
+					this.conn.rollback();
+				count2.incrementAndGet();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					this.conn.rollback();
+				} catch (Exception e2) {
+					e2.printStackTrace();
+				}
+				refreshConnIfNecessary();
+			}
+		}
+	}
+	
+	/*
+	 * 增加数据校验：
+	 * select a1, a2 from lifecycletest where a1= $1 and a2= $2
+	 * assert: a1==$1 and a2==$2
+	 */
+	
+	public void select() {
+		ResultSet rs = null;
+		for (int i = 1; i <= batchSize; i++) {
+			try {
+				selectStmt.setLong(1, id);
+				selectStmt.setLong(2, i);
+				rs = selectStmt.executeQuery();
+				while (rs.next()) {
+					if(rs.getLong(1) != id || rs.getLong(2) != i) {	
+						System.err.println("bad select , stmt:" + selectStmt.toString());
+						System.exit(-1);
+					}
+				}
+				if (this.r.nextInt(100) < commitPct)
+					this.conn.commit();
+				else
+					this.conn.rollback();
+				count2.incrementAndGet();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					this.conn.rollback();
+				} catch (Exception e2) {
+					e2.printStackTrace();
+				}
+				refreshConnIfNecessary();
+			}
+		}
+	}
+	
+	
+	public void select2() {
+		ResultSet rs = null;
+		for (int i = 1; i <= batchSize; i++) {
+			try {
+				rs = execStmt.executeQuery(String.format("select a1, a2 from lifecycletest where a1=%d and a2=%d ",id,i));
+				while (rs.next()) {
+					if(rs.getLong(1) != id || rs.getLong(2) != i) {	
+						System.err.println("bad select , stmt:" + execStmt.toString());
+						System.exit(-1);
+					}
+				}
+				if (this.r.nextInt(100) < commitPct)
+					this.conn.commit();
+				else
+					this.conn.rollback();
+				count2.incrementAndGet();
+				if(r.nextInt(100)<5)
+					refreshConn();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					this.conn.rollback();
+				} catch (Exception e2) {
+					e2.printStackTrace();
+				}
+				refreshConnIfNecessary();
+			}
+		}
+	}
+	
+	public void insert() {
+		long b=0;
+		for (int i = 1; i <= batchSize; i++) {
+			try {
+				insertStmt.setLong(1, id);
+				insertStmt.setLong(2, i);
+				b=r.nextLong();
+				insertStmt.setLong(3, b);
+				if(!useGenerateColumn) {
+					for(int m=1;m<=20;m++)
+						insertStmt.setString(3+m, b+"AAAAAAAAAAAAAAAAAAAAAAAA");
+				}
+				if (insertStmt.executeUpdate() != 1) {
+					System.err.println("bad upsert , stmt:" + insertStmt.toString());
+					System.exit(-1);
+				}
+				if (this.r.nextInt(100) < commitPct)
+					this.conn.commit();
+				else
+					this.conn.rollback();
+				count2.incrementAndGet();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					this.conn.rollback();
+				} catch (Exception e2) {
+					e2.printStackTrace();
+				}
+				refreshConnIfNecessary();
+			}
+		}
+	}
+	
+	
+	public void delete1() {
+		int ret=0;
+		for (int i = batchSize; i >=0; i--) {
+			try {
+				deleteStmt1.setLong(1, id);
+				deleteStmt1.setLong(2, i);
+				ret = deleteStmt1.executeUpdate();
+				if (ret > 1) {
+					System.err.println("bad delete , stmt:" + deleteStmt1.toString());
+					System.exit(-1);
+				}
+				if (this.r.nextInt(100) < commitPct)
+					this.conn.commit();
+				else
+					this.conn.rollback();
+				count2.incrementAndGet();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					this.conn.rollback();
+				} catch (Exception e2) {
+					e2.printStackTrace();
+				}
+				refreshConnIfNecessary();
+			}
+		}
+	}
+	
+	public void monitor() {
+		long pre = count2.get();
+		long curr = 0L;
+		while (true) {
+			try {
+				Thread.sleep(3000L);
+			} catch (InterruptedException localInterruptedException) {
+			}
+			curr = count2.get();
+			System.out.println("tps = " + (curr - pre) / 3L + ",total = " + curr + ", " + sdf.format(new Date()));
+			pre = curr;
+		}
+		
+	}
+
+	
+	enum OP{
+		UPSERT, DELETE1, MIX, MONITOR
+	};
+	
+
+	public static void main(String[] args) {
+		String usage = "dbType url parallel username password batchSize loopTimes useGenerateColumn runMode commitPct";
+		
+		if (args.length != usage.split(" ").length) {
+			System.out.println("version 1.1\nusage:" + usage);
+			System.out.println("\trunMode:" + "insert,upsert,delete1,select");
+			return;
+		}
+
+		dbType = args[0];
+		if(dbType.equalsIgnoreCase("oracle")) {
+			checkSQL="select 1 from dual";
+		}else {
+			checkSQL="select 1";
+		}
+			
+		url = args[1];
+		try {
+			parallel = Integer.parseInt(args[2]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default parallel:" + parallel + "\n detail:"
+					+ e.getMessage());
+		}
+
+		username = args[3];
+		password = args[4];
+		batchSize = Integer.parseInt(args[5]);
+		loopTimes= Integer.parseInt(args[6]);
+		useGenerateColumn= Boolean.parseBoolean(args[7]);
+		runMode = args[8];
+		commitPct = Integer.parseInt(args[9]);
+
+		
+		LifeCycleTest monitor = new LifeCycleTest(0);
+		monitor.setOP(OP.MONITOR);
+		monitor.start();
+			
+		LifeCycleTest threads[] = new LifeCycleTest[parallel];
+		for (int i = 0; i < parallel; i++) {
+			threads[i]= new LifeCycleTest(i);
+		}
+		
+		
+		for (int i = 0; i < parallel; i++) {
+			threads[i].start();
+		}		
+	}
+	
+	private void freeConn() {
+		try {
+			if (conn != null)
+				conn.close();
+		} catch (Exception localException) {
+		}
+		conn = null;
+	}
+
+	private Connection getConn(String url, String username, String password) {
+		Connection localCon = null;
+		while(true) {
+			try {
+				localCon = DriverManager.getConnection(url, username, password);
+			} catch (SQLException e) {
+				System.out.println("error, connect failed: " + url + "," + e.getMessage());
+				localCon=null;
+			}
+			if(localCon != null)
+				break;
+			
+			try {
+				Thread.sleep(100);
+			}catch(InterruptedException ie) {
+				
+			}
+		}
+		
+		try {
+			localCon.setAutoCommit(false);
+		} catch (SQLException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+
+		return localCon;
+	}
+}
