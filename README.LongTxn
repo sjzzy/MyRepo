@@ -1,0 +1,901 @@
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.text.SimpleDateFormat; 
+import java.util.Collections;
+import java.util.Date;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Random; 
+import java.util.concurrent.atomic.AtomicLong;
+
+
+/*
+ create table longtx(a int8  ,b int8, c text generated always as (b) stored);
+ --a is primary key
+ alter table longtx set(fillfactor=90);
+ 
+ create table txlog(a int8 not null, old_b int8 not null, new_b int8 not null, tid int8 not null, xid int8 not null, seq int8 not null,ts timestamp with time zone default now()) partition by hash(tid) partitions 16;
+-- create index txlog_idx2 on txlog(ts,a) local;
+create index txlog_idx2 on txlog(a,new_b);
+
+ create index txlog_idx on txlog(tid, xid,seq) global include (ts) ;
+ create index concurrently txlog_idx_33 on txlog(ts) local  include (tid, xid) where tid>=0 and xid>=0 and seq>=0;
+
+
+ 
+ 
+insert into longtx select generate_series(0,11000000);
+create unique index longtx_idx on longtx(b, a);
+create unique index longtx_idx2 on longtx(a, b, c) ;
+create index concurrently longtx_idx3 on longtx(c,b,a);
+create UNIQUE index longtx_idx4 on longtx(d, a, c, b);
+
+
+-----partition-------------------
+create table longtx(a int8  ,b int8, c text generated always as (b) stored)
+PARTITION BY RANGE (a)  -- 一级分区：RANGE分区
+SUBPARTITION BY HASH (b)  -- 二级分区：HASH分区
+SUBPARTITIONS 8  -- 每个一级分区创建8个HASH子分区
+(
+    PARTITION p0 VALUES LESS THAN (10000000),
+    PARTITION p1 VALUES LESS THAN (20000000),
+    PARTITION p2 VALUES LESS THAN (30000000),
+    PARTITION p3 VALUES LESS THAN (40000000),
+    PARTITION p4 VALUES LESS THAN (50000000),
+    PARTITION p5 VALUES LESS THAN (60000000),
+    PARTITION p6 VALUES LESS THAN (70000000),
+    PARTITION p7 VALUES LESS THAN (80000000),
+    PARTITION p8 VALUES LESS THAN (90000000),
+    PARTITION p9 VALUES LESS THAN (100000000),
+    PARTITION p10 VALUES LESS THAN (110000000),
+    PARTITION p11 VALUES LESS THAN (120000000),
+    PARTITION p12 VALUES LESS THAN (130000000),
+    PARTITION p13 VALUES LESS THAN (140000000),
+    PARTITION p14 VALUES LESS THAN (150000000),
+    PARTITION p15 VALUES LESS THAN (160000000),
+    PARTITION p16 VALUES LESS THAN (170000000),
+    PARTITION p17 VALUES LESS THAN (180000000),
+    PARTITION p18 VALUES LESS THAN (190000000),
+    PARTITION p19 VALUES LESS THAN (200000000)
+) ENABLE ROW MOVEMENT;
+
+create unique index longtx_idx on longtx(b, a) global;
+create unique index longtx_idx2 on longtx(a, b, c) global;
+create index  longtx_idx3 on longtx(c,b,a) global;
+create UNIQUE index longtx_idx4 on longtx(d, a, c, b) global;
+
+insert into longtx select a,b from longtx_normal where a <200000000;
+
+---ilm
+ create table txlog(a int8 not null, old_b int8 not null, new_b int8 not null, tid int8 not null, xid int8 not null, seq int8 not null,ts timestamp with time zone default now()) partition by hash(tid) partitions 16;
+-- create index txlog_idx2 on txlog(ts,a) local;
+create index txlog_idx2 on txlog(a,new_b);
+-----------------oracle
+  create table longtx(a numeric  ,b numeric);
+ --a is primary key 
+ create unique index longtx_idx on longtx(b, a);
+  create unique index longtx_idx2 on longtx(a, b);
+
+ create table txlog(a numeric, old_b numeric, new_b numeric, tid numeric, xid numeric, seq numeric,ts timestamp with time zone default systimestamp) partition by hash(a) partitions 16;
+ create index txlog_idx2 on txlog(ts,a) local;
+ create index txlog_idx on txlog(tid, xid,seq) local;
+
+ insert into longtx select rownum-1 , 0 from dba_objects a, dba_objects b where rownum<=110000001;
+ insert into longtx select rownum-1 , 0 from pg_class a, pg_class b, pg_class c where rownum<=110000001;
+ create table txlog(a numeric, old_b numeric, new_b numeric, tid numeric, xid numeric, seq numeric,ts timestamp with time zone default now()) partition by hash(a) partitions 16;
+
+ 
+ java -jar longTxn.jar 100 100 "jdbc:oracle:thin:@//127.0.0.1:1521/cdb1" t t 100 10 1000 oracle false >longtx.log 2>&1 &
+
+ commit;
+ sqlplus t2/t2@'(DESCRIPTION =(ADDRESS_LIST =(ADDRESS = (PROTOCOL = TCP)(HOST = 152.168.145.187)(PORT = 1521)))(CONNECT_DATA =(SERVER = DEDICATED)(SERVICE_NAME = pdb1_svc)))'
+-----------------end
+
+
+
+
+
+
+
+alter table longtx add column d text  default '100000';
+create unique index concurrently  longtx_idx4 on longtx(d,a ,c,b);
+
+
+update longtx set b=0; vacuum full longtx;
+
+
+select (select sum(new_b) from txlog where a=-1 ) + count(*)    from txlog where a >=0
+union all select sum(b) from longtx;
+
+select * from txlog where tid>=0 and xid>=0 and seq<0;
+
+
+with cte as ( delete from txlog where (tid, xid) in (select tid, xid from (select tid, xid,ts from txlog where tid>=0 and xid>=0 and seq>=0 group by 1,2,3 order
+ by ts limit 1 offset 3) )returning tid, xid)
+insert into txlog select -1,-1,count(*),tid, xid, -1 from cte group by tid, xid returning *;
+
+ * 
+ * 
+ */
+public class LongTxn extends Thread {
+	static String url = "jdbc:gaussdb://8.92.4.221:13003,8.92.4.222:13003,8.92.4.223:13003/tpcc?batchMode=on&tenantName=tenantA&connectMode=auth&tenantPassword=gauss@567&prepareThreshold=1&fetchsize=2";
+	static String user = "test";
+	static String passwd = "gs_123456"; 
+	static long max_id=10000000;
+	static long rollbackPct=1;
+	static long savepointPct=10;
+
+	Connection conn = null;
+	PreparedStatement update = null;
+	PreparedStatement select = null;
+	PreparedStatement insertLog = null;
+	PreparedStatement deleteSelect = null;
+	static int threads = 0;
+	static DBTYPE dbType=DBTYPE.gaussdb;
+	static String checkSQL=null;
+	static String driver=null ;
+	static boolean debug=false ;
+	static boolean checkEnv=false ;
+	static int mergeDataThread = 0;
+
+	static final Object lock = new Object();
+	static int query_dop=1;
+ 
+	enum DBTYPE  {gaussdb, oracle};
+	
+	Statement stmt = null;
+	int id = 0;
+	static String[] standbyURLs = null; 
+
+	static final int interval = 3000;
+	private SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+	static long transaction_size = 100000000; 
+	final static int table_num = 1;  
+ 
+	final static AtomicLong counter = new AtomicLong();
+	volatile static AtomicLong sum = new AtomicLong(0);
+
+	final static int standby_id_start = 100000000;
+	final static String[] standbyReadSQL=  { 
+			"select (select sum(new_b) from txlog where a=-1 ) + count(*) from txlog where a >=0",
+			"select sum(b) from longtx",
+			"select (select sum(new_b) from txlog where a=-1 ) + count(*) from txlog where a >=0 union select sum(b) from longtx"};
+			
+			
+	static volatile List<Long> account = Collections.synchronizedList(new LinkedList<Long>());
+	static volatile long[] oldestSum=null;
+
+	public static void main(String[] args) {
+		final String usage="threads transaction_size url user password rollbackPct savepointPct max_id db_type debug query_dop checkEnv mergeDataThread standbyURLs";
+		final String readme="db_type: gaussdb | oracle";
+		final String version="version:0.7";
+		if(args.length != usage.split(" ").length) {
+			System.out.println(version);
+			System.out.println(usage);
+			System.out.println(readme);
+			return ;
+		}
+		
+		try {
+			threads = Integer.parseInt(args[0]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default threads:" + threads + "\n detail:"
+					+ e.getMessage());
+		}
+		 
+		
+		try {
+			transaction_size = Long.parseLong(args[1]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default transaction_size:" + transaction_size + "\n detail:"
+					+ e.getMessage());
+		}
+		
+
+		url= args[2];
+		user = args[3];
+		passwd = args[4];
+		try {
+			rollbackPct = Long.parseLong(args[5]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default rollbackPct:" + rollbackPct + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		try {
+			savepointPct = Integer.parseInt(args[6]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default savepintPct:" + savepointPct + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		try {
+			max_id = Long.parseLong(args[7]);
+			if(max_id<threads) {
+				System.out.println("bad args ,max_id=" + max_id +", threads="+ threads);
+				System.exit(-1);
+			}
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default max_id:" + max_id + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		if(args[8].trim().equalsIgnoreCase("gaussdb")) {
+			dbType=DBTYPE.gaussdb;
+			driver="com.huawei.gaussdb.jdbc.Driver";
+			checkSQL="select 1";
+		}
+		else if(args[8].trim().equalsIgnoreCase("oracle")) { 
+			dbType=DBTYPE.oracle;
+			driver="oracle.jdbc.driver.OracleDriver";
+			checkSQL="select 1 from dual";
+		}
+		else {
+			System.out.println("not supported " + dbType);
+			System.exit(-1);
+		} 
+		
+		debug=Boolean.parseBoolean(args[9]);
+		
+		try {
+			query_dop = Integer.parseInt(args[10]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default query_dop:" + query_dop + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		checkEnv=Boolean.parseBoolean(args[11]);
+		
+		try {
+			mergeDataThread = Integer.parseInt(args[12]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default mergeDataThread:" + mergeDataThread + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		if(!args[13].equalsIgnoreCase("null")) {
+			standbyURLs = args[13].split(";");
+			oldestSum= new long[standbyURLs.length + 1];
+		}else {
+			oldestSum= new long[1];
+		}
+		 
+		LongTxn  worker = new LongTxn(0);
+		worker.initEnv();
+		worker.start();
+		
+		for (int i = 1; i <= threads; i++) {
+			new LongTxn(i).start();
+		}
+		
+		for(int i = -1;i >= 0-mergeDataThread; i--) {
+			new LongTxn(i).start();
+		}
+		if(standbyURLs!=null) {
+			for(int i=0;i<standbyURLs.length;i++) {
+				new LongTxn(standby_id_start + i).start();
+			}
+		}
+	}
+
+	
+	public LongTxn(int i) {
+		id = i;
+	}
+
+	private void initDB() {
+		while(true) {
+			try {
+				if(id<standby_id_start) {
+					conn = this.getConnection(url, user, passwd);
+					stmt = conn.createStatement();
+					update = conn.prepareStatement("update longtx set b = ? where a = ?");
+					select = conn.prepareStatement("select b,a from longtx where a = ? for update");
+					insertLog = conn.prepareStatement("insert into txlog(a, old_b,new_b,tid, xid,seq) values(?,?,?,?,?,?)");
+					//deleteSelect,只能有mergeData 线程使用，依赖mergeData线程的编号都是负数，从-1、-2 … ； 其它线程会报错
+//					deleteSelect = conn.prepareStatement("with cte as ( delete from txlog where (tid, xid) in (select tid, xid from (select tid, xid,ts from txlog where tid>=0 and xid>=0 and seq>=0 group by 1,2,3 order by ts limit 1 offset " + (0-this.id -1) + ") )returning tid, xid)   \n" + 
+//							" insert into txlog select -1,-1,count(*),tid, xid, -1 from cte group by tid, xid returning *;"); //防止冲突增加offset
+					
+					deleteSelect = conn.prepareStatement("with cte as ( delete from txlog where (tid, xid) in (select tid, xid from (( select *from (select tid, xid,ts from txlog where tid>=0 and xid>=0 and seq>=0"
+							+ " limit " + (mergeDataThread * transaction_size *2) + ") group by 1,2,3) order by ts limit 1 offset " + (0-this.id -1) 
+							+ " ) )returning tid, xid)  insert into txlog select -1,-1,count(*),tid, xid, -1 from cte group by tid, xid returning *" );
+				}
+				else {
+					assert(standbyURLs!=null );
+					assert(id-standby_id_start>=0 && id-standby_id_start< standbyURLs.length);
+					conn = this.getConnection(standbyURLs[id-standby_id_start], user, passwd);
+					stmt = conn.createStatement();
+				}
+				return;
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+	}
+
+	private Connection getConnection(String url, String user, String passwd) {
+		Connection conn = null;
+				
+		while (conn == null) {
+			try {
+				Class.forName(driver).newInstance();
+				conn = DriverManager.getConnection(url, user, passwd);
+				conn.setAutoCommit(false);
+			} catch (Exception e) {
+				System.out.println("failed to get connection:" + e.getMessage() + "," + url);
+				try {
+					Thread.sleep(3000);
+				} catch (InterruptedException e1) {
+					// TODO Auto-generated catch block
+					e1.printStackTrace();
+				}
+			}
+		}
+
+		return conn;
+	}
+
+	//每个线程产生不同的id，防止死锁
+	//[0 -- max_id]
+	//10%的数据不更新
+	public long genId(Random rand) {
+		long ret = rand.nextLong();
+ 		if(ret<0)
+			ret=0-ret;
+ 		ret= ret%max_id;
+		long batch_size=(long)(threads * 1.1);
+ 		 
+		//ret = ret % (max_id/batch_size) + (id * (max_id/batch_size));
+		ret = ((long)(ret/batch_size) - 1) * batch_size  + id;
+
+		if(ret<0)
+			ret = -ret;
+
+		if(!(ret>=0 && ret<=max_id)) {
+			System.out.println("bad id: " + ret);
+		}
+		return ret;		
+	}
+	
+	public void initEnv() {
+		initDB();
+
+		System.out.println("init db test env started");
+ 		while (true) {
+			try {
+				if(dbType==DBTYPE.gaussdb)
+					stmt.execute("set query_dop=64");
+				
+				String sql=null;
+				ResultSet rs=null;
+				long s=0;
+			
+				if(checkEnv) {
+					sql="delete from txlog";
+					System.out.println(sql);
+					stmt.executeUpdate(sql);
+					
+					sql = "select count(*) from txlog";
+					rs=stmt.executeQuery(sql);
+					if(!rs.next()) {
+						System.out.println("bad result: empty result" + " :" + sql);
+					}
+					if(rs.getLong(1) !=0) {
+						System.out.println("bad result expect =0, actual=" + rs.getLong(1) + " :" + sql);
+					}
+					rs.close();
+						
+					conn.commit();
+	
+			
+					sql = "select /*+ tablescan(txlog) */ count(*)from txlog;";
+					rs=stmt.executeQuery(sql);
+					if(!rs.next()) {
+						System.out.println("bad result: empty result" + " :" + sql);
+					}
+					if(rs.getLong(1) !=0) {
+						System.out.println("bad result expect =0, actual=" + rs.getLong(1) + " :" + sql);
+					}
+					rs.close();
+					
+					sql = "select /*+no tablescan(txlog) */ count(*)from txlog;";
+					rs=stmt.executeQuery(sql);
+					if(!rs.next()) {
+						System.out.println("bad result: empty result" + " :" + sql);
+					}
+					if(rs.getLong(1) !=0) {
+						System.out.println("bad result expect =0, actual=" + rs.getLong(1) + " :" + sql);
+					}
+					rs.close();
+					
+					 sql="select 'table - index' kind, * from (select /*+ tablescan(longtx)*/ a,b from longtx minus all select /*+ indexonlyscan(longtx longtx_idx2)*/ a,b from longtx) "
+							+" union all "  
+							 + " select 'index - table', * from (select /*+ indexonlyscan(longtx longtx_idx2)*/ a,b from longtx minus all select /*+ tablescan(longtx)*/ a,b from longtx)";
+					if(dbType == DBTYPE.oracle) {
+						//fake sql ,TODO 
+						sql="select * from longtx where 1=2 ";
+					}
+					System.out.println(sql);
+
+					rs = stmt.executeQuery(sql); 
+					if(rs.next()) {//should be empty
+						System.err.println("bad result:" +sql); 
+						System.err.println(rs.getString(1) + "," + rs.getLong(2) + "," + rs.getLong(3) + "," + rs.getString(4));
+						System.err.println("will exit");
+						rs.close();
+						rs=null; 
+						System.exit(-1);
+					}
+					rs.close();
+					conn.commit();
+				}
+				
+				sql="select /*+ indexonlyscan(longtx longtx_idx2)*/ sum(b) from longtx";
+				System.out.println(sql);
+				rs = stmt.executeQuery(sql); 
+				if(rs.next()) {
+					s= rs.getLong(1);
+					if(rs.next()) {
+						System.out.println("bad result >=2" + ":" + sql);
+					}
+					rs.close();
+					rs=null; 
+					
+					long res = sum.addAndGet(s);					
+					if(!account.add(res)) {
+						System.out.println("failed to add to list");
+						System.exit(-1);
+					} 
+					System.out.print("sum="+s + ",account=");
+					printList(account);
+					
+					if(checkEnv) {
+						insertLog.setLong(1,-1);
+						insertLog.setLong(2,-1);
+						insertLog.setLong(3,res);
+						insertLog.setLong(4,-1);
+						insertLog.setLong(5,-1);
+						insertLog.setLong(6,-1);
+						insertLog.executeUpdate();
+					}
+					
+					conn.commit();
+					System.out.println("init db test env finished");
+					return;
+				}else
+					System.out.println("bad result "+ 0 + ":" + sql);
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					conn.rollback();
+				}catch(Exception e3) {
+					System.out.println("force rollback failed:" + e3.getMessage());
+				}
+				
+				try {
+					stmt.execute(checkSQL);
+				} catch (Exception e2) {
+					System.out.println("check conn failed:" + e2.getMessage());
+					freeConn();
+					initDB();
+				}
+			}
+		}
+	}
+	
+	public void run() {
+		//0号线程不会执行update
+		if (id == 0)
+			monitor(); 
+		if(id < 0)
+			mergeData();
+		if(id >=standby_id_start)
+			standbyRead();
+		update(); 
+	}
+
+	private int getOldestIndex() {
+		long sum=Long.MAX_VALUE;
+		for(int i=0;i<oldestSum.length;i++) {
+			if(oldestSum[i]<sum)
+				sum = oldestSum[i];
+		}
+		return account.indexOf(sum);
+	}
+
+	public void monitor() {
+		long num_xacts_old = 0L;
+		long num_xacts_new = 0L;
+		long old_sum=0;
+		Random random = new Random();
+		int high_level = 3 * threads;
+		if(high_level<100)
+			high_level=100;
+		String sql_tablescan="select /*+ tablescan(longtx)*/ sum(b) from longtx";
+		String sql_indexscan="select /*+ indexonlyscan(longtx longtx_idx)*/ sum(b) from longtx";	
+		if(dbType==DBTYPE.oracle)
+			sql_indexscan="SELECT /*+ INDEX_FFS(longtx longtx_idx) */ SUM(b) FROM longtx";
+		while (true) {
+			long start_time=System.currentTimeMillis();
+			num_xacts_old = num_xacts_new;
+			try { 
+				String sql=random.nextBoolean() ? sql_tablescan : sql_indexscan;
+				sql=sql_indexscan; //tablescan太慢，暂时不测；后续可以删掉
+				if(dbType==DBTYPE.gaussdb)
+					stmt.execute("set query_dop=" + query_dop);
+				int index=0;
+				ResultSet rs = stmt.executeQuery(sql);
+				if(rs.next()) {
+					long ret = rs.getLong(1);
+					index = account.indexOf(ret);
+					if(index<0 || ret < old_sum) { //包含在list中，并且递增
+						System.out.println("query start " +sdf.format(new Date(start_time)) + ", curr time=" + sdf.format(new Date()));
+						System.out.print("bad result: ret=" + ret + ",old=" + old_sum + ", list="); printList(account);
+						System.out.println(sql);						
+					}else {
+						if(debug) {
+							System.out.println("query start " +sdf.format(new Date(start_time)) + ", curr time=" + sdf.format(new Date()));
+							System.out.print("ret=" + ret + ",list=");  printList(account);
+							System.out.println(sql);	
+						}
+					}
+					//主机使用0
+					oldestSum[0] = ret;	
+					old_sum = ret;
+				}else {
+					System.out.print("bad result: empty result");
+					System.out.println(sql);
+				}
+				
+				rs.close();
+				rs=null;
+				conn.commit();
+				
+				//在出差的情况下，可能为-1，只影响本次清理而已
+				index = getOldestIndex();
+				//if(account.size()> high_level&& index < threads ) {
+				if(account.size()> high_level) {
+					if(debug)
+						System.out.println("clean account, index=" + index);
+					for(int i=0;i<index/2;i++)
+						account.remove(0);
+				}
+			}catch (Exception e) {
+				e.printStackTrace(); 
+				try {
+					conn.rollback();
+				}catch(Exception e3) {
+					System.out.println("force rollback failed:" + e3.getMessage());
+				}
+				
+				try {
+					stmt.execute(checkSQL);
+				} catch (Exception e2) {
+					System.out.println("check conn failed:" + e2.getMessage());
+					freeConn();
+					initDB();
+				}
+			}
+
+			
+//			try {
+//				Thread.sleep(interval);
+//			} catch (InterruptedException e) {
+//				e.printStackTrace();
+//			}
+			num_xacts_new = counter.get();
+			long end_time=System.currentTimeMillis();
+
+		//	if(num_xacts_new!=num_xacts_old)
+				System.out.println("tps=" + (num_xacts_new - num_xacts_old) * 1000L / (end_time-start_time) + "\t,total_xacts="
+					+ num_xacts_new + "\t,sum=" + sum.get() + " \t" +  sdf.format(new Date()));
+		}
+	}
+ 
+	public void update() {
+		initDB();
+		Random random = new Random();
+		long xid = 0;
+		while (true) {
+			xid++;
+			try {
+				long b = 0;
+				long a=0;
+				long delta=0;
+				long start_time=System.currentTimeMillis();
+				for (long k = 0; k < (transaction_size); k++) { 
+					long id = genId(random);	
+					boolean hasSavepoint=false;
+
+					//概率生成savepoint
+					if(random.nextInt(100)<savepointPct) {
+						stmt.execute("savepoint s"+k);
+						hasSavepoint=true;
+					}
+					
+					//首先查看原值
+					select.setLong(1, id);
+					ResultSet rs = select.executeQuery();
+					if(rs.next()) {
+						b=rs.getLong(1);
+						a=rs.getLong(2);
+						if(a != id) {
+							System.out.println("bad result param=" + id + ", actual a=" + a + " :" + select.toString());
+						}
+						if(rs.next())
+							System.out.println("bad result >=2" + ":" + select.toString());
+					}
+					else
+						System.out.println("bad result "+ 0 + ":" + select.toString());
+					rs=null; 
+					
+					//执行更新
+					update.setLong(1, b+1);
+					update.setLong(2,id);
+					int ret = update.executeUpdate();
+					if(ret!=1)
+						System.out.println("bad result "+ ret + ":" + update.toString());
+					delta++;
+					
+					insertLog.setLong(1, id);
+					insertLog.setLong(2, b);
+					insertLog.setLong(3, b+1);
+					insertLog.setLong(4, this.getId());
+					insertLog.setLong(5, xid);
+					insertLog.setLong(6, k);	
+					ret = insertLog.executeUpdate();
+					if(ret!=1)
+						System.out.println("bad result "+ ret + ":" + insertLog.toString());					
+					
+					//校验
+					rs = select.executeQuery();
+					if(rs.next()) {
+						long new_b=rs.getLong(1);
+						a=rs.getLong(2);
+						if(a != id) {
+							System.out.println("bad result param=" + id + ", actual a=" + a + " :" + select.toString());
+						}
+						if(new_b != b+1){
+								System.out.println("bad update old="+ b+ "new= " + new_b + ":" + select.toString());
+						}
+						
+						if(rs.next())
+							System.out.println("bad result >=2" + ":" + select.toString());
+					}
+					else
+						System.out.println("bad result "+ 0 + ":" + select.toString());
+					rs.close();
+					rs=null;
+					
+					if(hasSavepoint) {
+						//概率回滚
+						if(random.nextInt(100)<50) {
+							stmt.execute("rollback to savepoint s"+k);
+							delta--;
+							//再次校验
+							rs = select.executeQuery();
+							if(rs.next()) {
+								long new_b=rs.getLong(1);
+								a=rs.getLong(2);
+								if(a != id) {
+									System.out.println("bad result param=" + id + ", actual a=" + a + " :" + select.toString());
+								}
+								if(new_b != b){
+										System.out.println("bad update after rollback to savepoint, old="+ b+ "new= " + new_b + ":" + select.toString());
+								}
+								
+								if(rs.next())
+									System.out.println("bad result >=2" + ":" + select.toString());
+							}
+							else
+								System.out.println("bad result "+ 0 + ":" + select.toString());
+							rs.close();
+							rs=null;
+						}
+					}
+
+				}
+				
+				if (random.nextInt(10000) > rollbackPct) {
+					long res =0;
+					try {
+						synchronized(lock) {
+							conn.commit(); //should NOT be failed,  否则会引起校验错误
+							res = sum.addAndGet(delta);
+						}
+					}catch(SQLException se) {
+						se.printStackTrace();
+						System.exit(-1);
+					}
+					if(debug)
+						System.out.println("total=" + res);
+					if(!account.add(res)) {
+						System.out.println("failed to add to list");
+						System.exit(-1);
+					}
+				}
+				else
+					conn.rollback();
+				counter.incrementAndGet();
+				long end_time=System.currentTimeMillis();
+				if(debug)
+					System.out.println("t"+this.getId() + " xid=" + xid + " elipsed time=" + (int)((end_time - start_time)/1000) + "s");
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					conn.rollback();
+				}catch(Exception e3) {
+					System.out.println("force rollback failed:" + e3.getMessage());
+				}
+				
+				try {
+					stmt.execute(checkSQL);
+				} catch (Exception e2) {
+					System.out.println("check conn failed:" + e2.getMessage());
+					freeConn();
+					initDB();
+				}
+			}
+		}
+	}
+	
+	//合并txlog中的数据
+	public void mergeData() {
+		initDB();
+		Random random = new Random();
+		int sleep_time=0;
+		while (true) {
+ 			try {
+ 				if(dbType==DBTYPE.gaussdb)
+					stmt.execute("set query_dop=" + query_dop);
+				long start_time=System.currentTimeMillis();
+				ResultSet rs = deleteSelect.executeQuery();
+				if(!rs.next()) {
+					//no more data to process, just sleep
+					sleep_time=10;
+					
+				}else {
+					if(debug)
+						System.out.println("merge data: delta=" + rs.getLong(3) + ", tid=" + rs.getLong(4)+ ", xid=" + rs.getLong(5));
+					sleep_time=1;
+				}
+				rs.close();
+				rs=null;
+				if (random.nextInt(10000) > rollbackPct) {
+					conn.commit(); //should NOT be failed,  否则会引起校验错误
+				}	
+				else
+					conn.rollback();
+				counter.incrementAndGet();
+				long end_time=System.currentTimeMillis();
+				if(debug)
+					System.out.println("merge data elipsed time=" + (int)((end_time - start_time)/1000) + "s");
+				try {
+					Thread.sleep(sleep_time * 1000);
+				}catch(InterruptedException ie) {
+				}
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					conn.rollback();
+				}catch(Exception e3) {
+					System.out.println("force rollback failed:" + e3.getMessage());
+				}
+				
+				try {
+					stmt.execute(checkSQL);
+				} catch (Exception e2) {
+					System.out.println("check conn failed:" + e2.getMessage());
+					freeConn();
+					initDB();
+				}
+			}
+		}
+	}
+	
+	//备机读
+	public void standbyRead() {
+		initDB();
+		Random random = new Random();
+		int sqlID=0;
+		long ret=0;
+		long index;
+		long oldSum=0;
+		String sql=null;
+		while (true) {
+ 			try {
+ 				if(dbType==DBTYPE.gaussdb)
+					stmt.execute("set query_dop=" + query_dop);
+				long start_time=System.currentTimeMillis();
+				sql=standbyReadSQL[sqlID];
+				sqlID=(sqlID+1)%standbyReadSQL.length;
+				ResultSet rs = stmt.executeQuery(sql);
+				if(!rs.next()) {
+					System.out.println("bad standby result "+ 0 + ":" + sql + ", id=" + (id-standby_id_start));
+				}else {
+					ret=rs.getLong(1);
+					if(ret==0 && oldSum==0) {//数据可能没有初始化，忽略此次校验
+						if(debug) {	
+							System.out.print("standby ret=" + ret  + ", id=" + (id-standby_id_start) ); 
+							System.out.println(sql);	
+						}						
+					}else {						
+						index = account.indexOf(ret);
+						if(index<0 || ret < oldSum) { //包含在list中，并且递增
+								System.out.println("standby query start " +sdf.format(new Date(start_time)) + ", curr time=" + sdf.format(new Date())  + ", id=" + (id-standby_id_start));
+								System.out.print("bad standby result: ret=" + ret + ",old=" + oldSum + "," + (ret < oldSum ? "less, " : "") + " list="); printList(account);
+								System.out.println(sql);						
+						}else {
+							if(debug) {
+								System.out.println("standby query start " +sdf.format(new Date(start_time)) + ", curr time=" + sdf.format(new Date())  + ", id=" + (id-standby_id_start));
+								System.out.print("standby ret=" + ret ); 
+								System.out.println(sql);	
+							}
+						}
+					}
+					oldSum = ret;
+					oldestSum[id-standby_id_start +1]=ret;
+					
+					if(rs.next()) { //还有结果，说明不一致
+						System.out.println("bad standby result, row1:" + oldSum + ", row2=" + rs.getLong(1) + " :" + sql  + ", id=" + (id-standby_id_start));
+						//为了后续继续运行，重置为0
+						oldSum=0;
+					}
+				}
+				rs.close();
+				rs=null;
+				if (random.nextInt(10000) > rollbackPct) {
+					conn.commit(); //should NOT be failed,  否则会引起校验错误
+				}	
+				else
+					conn.rollback();
+				long end_time=System.currentTimeMillis();
+				if(debug)
+					System.out.println("standby ready elipsed time=" + (int)((end_time - start_time)/1000) + "s"  + ", id=" + (id-standby_id_start));
+//				try {
+//					Thread.sleep(sleep_time * 1000);
+//				}catch(InterruptedException ie) {
+//				}
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					conn.rollback();
+				}catch(Exception e3) {
+					System.out.println("force rollback failed:" + e3.getMessage());
+				}
+				
+				try {
+					stmt.execute(checkSQL);
+				} catch (Exception e2) {
+					System.out.println("check conn failed:" + e2.getMessage());
+					freeConn();
+					initDB();
+				}
+			}
+		}
+	}
+	
+	private void freeConn() {
+		try {
+			if (conn != null)
+				conn.close();
+		} catch (Exception localException) {
+		}
+		conn = null;
+	}
+	
+	private void printList(List<Long> list) {
+		int n = 15; // 每行打印15个元素
+		StringBuffer sb = new StringBuffer("[");
+		for (int i = 1; i <= list.size(); i++) {
+		    sb.append(list.get(i-1));
+		    sb.append((i % n == 0) ? "\n" : ",");
+		}
+		sb.append("]");
+		System.out.println(sb.toString());
+	}
+}
