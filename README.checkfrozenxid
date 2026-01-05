@@ -1,0 +1,77 @@
+--注意：不支持并发调用
+
+drop table if exists check_frozenxid_result;
+create table check_frozenxid_result
+(   xmin_xid int8, 
+    xmax_xid int8, 
+    schema text, 
+    object text, 
+    frozenxid int8, 
+    status text, 
+    ts timestamp(6) default now());
+
+--检查一个对象frozenxid是否满足条件
+CREATE or replace function check_frozenxid_one_object(
+    v_schema varchar(128),
+    V_OBJECT varchar(128),
+    v_frozenxid int8)
+RETURNS void
+    LANGUAGE plpgsql NOT SHIPPABLE
+ AS $$
+DECLARE
+    PRAGMA AUTONOMOUS_TRANSACTION;
+    v_sql text;
+BEGIN
+    --只插入10行即可
+    v_sql := 'insert into check_frozenxid_result  select xmin::text, xmax::text,'''||v_schema||''','''||V_OBJECT||''','||v_frozenxid || ', ''check failed,BUG'' from "'|| v_schema|| '"."'|| V_OBJECT || '" where (xmin::text::int8 > 2 and xmin::text::int8 < '||v_frozenxid || ') or (xmax::text::int8 > 2 and xmax::text::int8 < '||v_frozenxid || ') limit 10';
+--    raise notice '%', v_sql;
+    execute IMMEDIATE  v_sql;
+    v_sql :='insert into check_frozenxid_result(schema,object,frozenxid,status) values ($1,$2,$3,$4);';
+    execute IMMEDIATE  v_sql using in v_schema,V_OBJECT,v_frozenxid,'success';
+    commit;
+exception
+    when others then  
+        raise notice 'check_frozenxid_one_object:%',SQLERRM;
+        v_sql :='insert into check_frozenxid_result(schema,object,frozenxid,status) values ($1,$2,$3,$4);';
+       execute IMMEDIATE v_sql using in v_schema,V_OBJECT,v_frozenxid,SQLERRM;
+       commit;
+END;
+$$;
+
+/*
+   检查表对象中的xmin、xmax，应该小于pg_class中的relfrozenxid64。
+   否则就是relfrozenxid64计算错误，可能会导致"could not access status of transaction XXXX"   
+   
+   注意：需要在每个database下都执行   
+*/
+CREATE or replace function check_frozenxid() RETURNS void
+    LANGUAGE plpgsql NOT SHIPPABLE
+ AS $$
+DECLARE
+    v_schema varchar(128);
+    v_table_name varchar(128);
+    v_frozenxid int8;
+    --当前只检查表对象
+    cursor cur for select nspname, relname,relfrozenxid64 from pg_class ,pg_namespace n where relnamespace=n.oid and relkind='r'; 
+    v_sql text;
+BEGIN
+    --先删除之前的检查结果
+    delete from check_frozenxid_result;
+    commit;
+    open cur; 
+    loop 
+        fetch cur into v_schema,v_table_name,v_frozenxid;
+        exit when cur%notfound;
+        check_frozenxid_one_object(v_schema,v_table_name,v_frozenxid);
+    end loop;
+exception
+   when others then
+       raise notice 'check_frozenxid:%',SQLERRM;
+       v_sql :='insert into check_frozenxid_result(schema,object,frozenxid,status) values ($1,$2,$3,$4)';
+       execute v_sql using v_schema,v_table_name,v_frozenxid,SQLERRM;
+       commit;      
+END;
+$$;
+
+select check_frozenxid();
+select * from check_frozenxid_result;
