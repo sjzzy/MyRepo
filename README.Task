@@ -1,0 +1,213 @@
+package task;
+
+import java.io.FileInputStream;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Properties;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+
+
+public abstract class Task extends Thread {	
+	private static final String version = "1.0";
+	private static final String confFile = "cctest.conf"; 
+	private static final String checkSQL = "select 1";
+
+	private SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+
+	protected long id = 0;
+	
+	protected Connection conn = null;
+ 	private Statement checkStmt = null; 
+ 	protected Random rand = new Random(); 
+
+ 	protected static String dbType = "postgres";
+ 	protected static String url = null;
+ 	protected static String username = null;
+ 	protected static String password = null;
+ 	protected static int parallel=100;
+
+ 
+	public static Properties properties = new Properties();
+	public static AtomicLong count2 = new AtomicLong(0L);
+	
+	
+	
+	public static int readIntConfig(String key, int defaultValue) {
+		String value = properties.getProperty(key);
+		try {
+			if(value==null)
+				value="";
+			return Integer.parseInt(value);
+		}catch(NumberFormatException e) {
+			System.out.println(e.getMessage());
+			System.out.println("failed to parse " +  key + ", " + value +"; using default " + defaultValue);
+			return defaultValue;
+		}
+	}
+	
+	public static boolean readBooleanConfig(String key, boolean defaultValue) {
+		String value = properties.getProperty(key);
+		if(value==null) {
+			System.out.println("failed to parse " +  key + ", " + value +"; using default " + defaultValue);
+			return defaultValue;
+		}
+		
+		if(value.equalsIgnoreCase("on") || value.equalsIgnoreCase("true"))
+			return true;
+		else
+			return false;
+	}
+	
+	public static String readStringConfig(String key, String defaultValue) {
+		String value = properties.getProperty(key);
+		if(value==null) {
+			System.out.println("failed to parse " +  key + ", " + value +"; using default " + defaultValue);
+			return defaultValue;
+		}
+		else
+			return value;
+	}
+
+	public Task(int i) {
+		this.id =  i;		
+		try {
+			if (dbType.equalsIgnoreCase("oracle")) {
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+			}
+			else if (dbType.equalsIgnoreCase("postgres"))
+				Class.forName("org.postgresql.Driver");
+			else if (dbType.equalsIgnoreCase("gaussdb"))
+				Class.forName("com.huawei.gaussdb.jdbc.Driver");
+			else
+				Class.forName("com.huawei.gaussdb.jdbc.Driver");
+		} catch (ClassNotFoundException e) {
+			e.printStackTrace();
+			System.exit(-1);
+		}
+ 	}
+	 
+	
+	public void initStmt() throws SQLException	{
+	}
+	
+	public boolean initDBUntilSucc() {
+		while(true) {
+			this.conn = getConnUntilSucc(url, username, password);
+			assert(conn != null);
+			try {
+				checkStmt=conn.createStatement();
+				initStmt();
+			} catch (Exception e) {
+				System.out.println(e.getMessage());
+				freeConn();
+				try {
+					Thread.sleep(1000);
+				} catch (InterruptedException e1) {
+					e1.printStackTrace();
+				}
+				continue;				
+			}
+			
+			return true;
+		}
+	}
+	
+	public abstract void doTask() ;
+	
+	public void run() {
+		initDBUntilSucc();
+		if(id==0)
+			monitor();
+		doTask();
+	}
+	
+	
+	protected void refreshConnIfNecessary() {
+		if(conn!=null) {
+			try {
+				checkStmt.executeQuery(checkSQL);
+				return ;
+			}catch(SQLException se) {
+				System.out.println("check stmt," + se.getMessage());
+				freeConn();
+				initDBUntilSucc();
+			}
+		}
+		
+	}
+	
+	protected void refreshConnByRandom(int pct) {
+		if(conn!=null) {
+			if(rand.nextInt(100)<=pct) {
+				freeConn();
+				initDBUntilSucc();
+			}
+		}
+	}
+	
+	protected void refreshConn() {
+		freeConn();
+		initDBUntilSucc();
+	}
+
+	public String genDate() {
+		Date d = new Date(rand.nextInt(100000000) + 1730000l*1000*1000);
+		return sdf.format(d);
+	}
+	
+	public void monitor() {
+		long pre = count2.get();
+		long curr = 0L;
+		while (true) {
+			try {
+				Thread.sleep(3000L);
+			} catch (InterruptedException localInterruptedException) {
+			}
+			curr = count2.get();
+			System.out.println("tps = " + (curr - pre) / 3L + ",total = " + curr + ", " + sdf.format(new Date()));
+			pre = curr;
+		}
+	}
+
+	private void freeConn() {
+		try {
+			if (conn != null)
+				conn.close();
+		} catch (Exception localException) {
+		}
+		conn = null;
+	}
+
+	private Connection getConnUntilSucc(String url, String username, String password) {
+		Connection localCon = null;
+		while(true) {
+			try {
+				localCon = DriverManager.getConnection(url, username, password);
+			} catch (SQLException e) {
+				System.out.println("error, connect failed: " + url + "," + e.getMessage());
+				localCon=null;
+			}
+			if(localCon != null)
+				break;
+			
+			try {
+				Thread.sleep(100);
+			}catch(InterruptedException ie) {				
+			}
+		}
+		
+		try {
+			localCon.setAutoCommit(false);
+		} catch (SQLException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+
+		return localCon;
+	}
+}
