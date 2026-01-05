@@ -1,0 +1,147 @@
+import java.util.HashSet;
+import java.util.Random;
+/*
+ drop table pktable;
+create table pktable(e text,a bigint, b varchar(128), c text, d char(32)) distribute by hash(a,b,c);
+alter table pktable add primary key(a,b,c,d);
+
+drop table base;
+create table base(id int);
+insert into base select generate_series(1,100);
+
+insert into pktable select '' , a.id+10000000000, b.id+10000000000, c.id+10000000000, d.id+10000000000 from base a, base b , base c ,base d;
+
+ */
+
+public class InList {
+	final static int range = 100;
+	final static int inElements = 100;
+	final static long base = 10000000001l;
+
+	final static char[] cols = new char[] { 'a', 'b', 'c', 'd' };
+	final static String STRING = "1947年12月15日至1948年3月15 日，东北野战军发动了为期90天的冬季攻势作战，将国民党军压缩于长春、沈阳、锦州等几处互相不能联系的孤立地域内，为全歼东北地区的国民党军奠定了基础。也恰恰在此时，战斗中也暴露出我军从游击战向正规战转变过程中的一些问题，如：司令部工作浮于形式、指挥员不善于运用炮兵、基层指战员不能熟练掌握“四组一队”“一点两面”的战术思想等。";
+	
+	Random r = new Random();
+	
+
+	private long getId() {
+		return base + r.nextInt(range);
+	}
+
+	private long getId(long pre) {
+		if (r.nextInt(100) < 30)
+			return pre;
+		return base + r.nextInt(range);
+	}
+
+	private String getStr() {
+		return "'" + (base + r.nextInt(range)) + "'";
+	}
+
+	private  String getStr(String pre) {
+		if (pre != null && r.nextInt(100) < 30)
+			return pre;
+		return "'" + (base + r.nextInt(range)) + "'";
+	}
+
+	private String getCol() {
+		return cols[r.nextInt(cols.length)] + "";
+	}
+	
+	private  String getRandomStr() { 
+		int len = 0;
+		if (r.nextBoolean()) {
+			len = r.nextInt(5);
+		} else {
+			len = r.nextInt(15) + 30;
+		}
+		int start=r.nextInt(STRING.length()-len);
+		return STRING.substring(start, start+ len);
+	}
+	
+	private boolean generateUpdate(int pctOfCommit) {
+		boolean forceRollback = false;
+		
+		StringBuffer sb = new StringBuffer("update pktable set e='");
+		sb.append( getRandomStr() + "'");
+		String col = getCol();
+
+		if (r.nextInt(100) < pctOfCommit) {
+			sb.append("," + col + "=" + col);
+		} else {
+			forceRollback = true;
+			sb.append("," + col + "= 0 -" + col);
+		}
+
+		sb.append(" where a=" + getId() + " and b='"+  getId() + "' and c='" + getId() + "' and d='" + getId() + "';");
+		System.out.println(sb.toString());
+		return forceRollback;
+	}
+
+	public void update() {		
+		for (int i = 0; i < 100000; i++) {
+			System.out.println("start transaction;");
+			for(int s=0;s<r.nextInt(10);s++) {
+				System.out.println("savepoint s" + s+ " ;");
+				boolean forceRollback = generateUpdate(50);
+				if(forceRollback|| r.nextInt(100) < 20)
+					System.out.println("rollback to savepoint s" + s+ " ;");
+			}
+			
+			boolean forceRollback=generateUpdate(95);	 
+			if (forceRollback|| r.nextInt(100) < 20)
+				System.out.println("rollback;");
+			else
+				System.out.println("commit;");
+		}
+	}
+
+	public void select() {
+		for (int index = 0; index < 100000; index++) {
+			StringBuffer sb = new StringBuffer("");
+
+			int rows = 1;
+			int[] uniqueElements = new int[cols.length];
+			for (int c = 0; c < cols.length; c++) {
+				HashSet<String> set = new HashSet<String>();
+				if (c != 0)
+					sb.append(" and ");
+				char col = cols[c];
+				sb.append(col + " in (");
+				int n = r.nextInt(inElements) + 1;
+				String value = null;
+				for (int i = 0; i < n; i++) {
+					if (i != 0)
+						sb.append(",");
+					String tmp = getStr(value);
+					value = tmp;
+					set.add(tmp);
+					sb.append(tmp);
+				}
+				rows = rows * set.size();
+				uniqueElements[c] = set.size();
+				sb.append(")");
+			}
+			StringBuffer rowInfo = new StringBuffer(",detail:");
+			for (int i = 0; i < cols.length; i++) {
+				rowInfo.append(uniqueElements[i] + ",");
+			}
+			System.out.println(
+					"/*rows=" + rows + rowInfo + " */" + "select 'exp=" + rows + "', 'ret='|| count(*), case when "
+							+ rows + "=count(*) then 'OK' else 'NOK' end  from pktable where " + sb + ";");
+		}
+	}
+
+	public static void main(String args[]) {
+		if (args.length >= 1) {
+			if (args[0].equalsIgnoreCase("select"))
+				new InList().select();
+			else
+				new InList().update();
+		} else {
+			System.out.println("select or update");
+		}
+
+	}
+
+}
