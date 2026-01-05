@@ -1,0 +1,270 @@
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class GCCM extends Thread {
+	private long id = 0;
+	
+	private Connection conn = null;
+	private Random r = new Random();
+	private Statement checkStmt = null;
+	private PreparedStatement selectStmt = null;
+	private volatile OP op ;
+
+
+	private static int parallel = 100;
+	private static String dbType = "postgres";
+	private static String url = null;
+	private static String username = null;
+	private static String password = null;
+	private static int batchSize=1000000;
+	private static int loopTimes=30000;
+	private static boolean useGenerateColumn=true;
+	private static String runMode="select";
+	private static int commitPct=70;
+
+
+	private static String checkSQL = null;
+	
+	private static SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+	private static AtomicLong count2 = new AtomicLong(0L);
+
+	public GCCM(int i) {
+		this.id =  i;		
+		try {
+			if (dbType.equalsIgnoreCase("oracle")) {
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+			}
+			else if (dbType.equalsIgnoreCase("postgres"))
+				Class.forName("org.postgresql.Driver");
+			else if (dbType.equalsIgnoreCase("gaussdb"))
+				Class.forName("com.huawei.gaussdb.jdbc.Driver");
+			else
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+		} catch (ClassNotFoundException e) {
+			e.printStackTrace();
+			System.exit(-1);
+		}
+		this.op=OP.select;
+	}
+	
+	public void setOP(OP o) {
+		this.op=o;
+	}
+	
+	public boolean initDB() {
+		while(true) {
+			this.conn = getConn(url, username, password);
+			assert(conn != null);
+			try {
+				//upsertStmt = this.conn.prepareStatement("call err_test_pkg1.err_test_proc1(?,'2','3','4','5','6','7','8','9','10','11','12','13', '14', '1','2','3','4','5','6','7','8','9','10','11','12','13', '14','15','16','17', '18','19', 1,2,3,4,5, 1,2,3,4,5);");
+				selectStmt= conn.prepareStatement("select sum(a1+b1) from a,b where  a1 between ? and ? + 10000 and a1= b1 and exists (select * from a where a1=b1) and  exists( select * from b where b1=a1) and a2 in (select a2 from a t2 where t2.a1=a.a1) " );
+				checkStmt =  conn.createStatement();
+			} catch (SQLException e) {
+				e.printStackTrace();
+				freeConn();
+				try {
+					Thread.sleep(1000);
+				} catch (InterruptedException e1) {
+					e1.printStackTrace();
+				}
+				continue;
+				
+			}
+			
+			return true;
+		}
+	}
+	
+	public void doOneTask(String taskName, int times, int sleepTime) {
+		long startTime = 0;
+		long endTime =  0;
+		startTime = System.currentTimeMillis();
+		
+		if(taskName.equalsIgnoreCase("select"))
+			select();
+		else
+			System.out.println(taskName + " not supported, skipped");
+		
+		endTime = System.currentTimeMillis();
+			System.out.println(" test finish , " + this.getId() + ", " +  (endTime - startTime)/1000 + "s");	
+		if(sleepTime>0) {
+			try {
+				Thread.sleep(sleepTime*1000);
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+	}
+	
+	public void run() {
+		initDB();
+		
+		if(op == OP.MONITOR) {
+			monitor();
+			return;
+		}
+		
+		String task[]=runMode.split(",");
+		for(int i=0;i<loopTimes;i++) {
+			for(int k=0;k<task.length;k++) {
+				doOneTask(task[k],i,0);
+			}
+		}
+	}
+	
+	private void refreshConnIfNecessary(boolean forceRefresh) {
+		if(!forceRefresh && conn!=null) {
+			try {
+				checkStmt.executeQuery(checkSQL);
+				return ;
+			}catch(SQLException se) {
+				System.out.println("check stmt," + se.getMessage());
+				freeConn();
+			}
+		}
+		initDB();
+	}
+
+	public void select() {
+		for (int i = 1; i <= batchSize; i++) {
+			try {
+				int a1 =(int)id*100+1;
+				selectStmt.setInt(1, a1);
+				selectStmt.setInt(2, a1);
+				ResultSet rs = selectStmt.executeQuery();
+				if (rs.next()) {
+					rs.getLong(1);
+				}else {
+					System.out.println("bad result," + a1);
+				}
+				
+				count2.incrementAndGet();
+			} catch (Exception e) {
+				e.printStackTrace();
+
+				refreshConnIfNecessary(false);
+			}
+		}
+	}
+	
+	
+	
+	public void monitor() {
+		long pre = count2.get();
+		long curr = 0L;
+		while (true) {
+			try {
+				Thread.sleep(3000L);
+			} catch (InterruptedException localInterruptedException) {
+			}
+			curr = count2.get();
+			System.out.println("tps = " + (curr - pre) / 3L + ",total = " + curr + ", " + sdf.format(new Date()));
+			pre = curr;
+		}
+		
+	}
+
+	
+	enum OP{
+		select, MONITOR
+	};
+	
+
+	public static void main(String[] args) {
+		String usage = "dbType url parallel username password batchSize loopTimes useGenerateColumn runMode commitPct";
+		
+		if (args.length != usage.split(" ").length) {
+			System.out.println("version 1.1\nusage:" + usage);
+			System.out.println("\trunMode:" + "select");
+			return;
+		}
+
+		dbType = args[0];
+		if(dbType.equalsIgnoreCase("oracle")) {
+			checkSQL="select 1 from dual";
+		}else {
+			checkSQL="select 1";
+		}
+			
+		url = args[1];
+		try {
+			parallel = Integer.parseInt(args[2]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default parallel:" + parallel + "\n detail:"
+					+ e.getMessage());
+		}
+
+		username = args[3];
+		password = args[4];
+		batchSize = Integer.parseInt(args[5]);
+		loopTimes= Integer.parseInt(args[6]);
+		useGenerateColumn= Boolean.parseBoolean(args[7]);
+		runMode = args[8];
+		commitPct = Integer.parseInt(args[9]);
+
+		
+		GCCM monitor = new GCCM(0);
+		monitor.setOP(OP.MONITOR);
+		monitor.start();
+			
+		GCCM threads[] = new GCCM[parallel];
+		for (int i = 0; i < parallel; i++) {
+			threads[i]= new GCCM(i);
+		}
+		
+		
+		for (int i = 0; i < parallel; i++) {
+			threads[i].start();
+		}		
+	}
+	
+	private void freeConn() {
+		try {
+			if (conn != null)
+				conn.close();
+		} catch (Exception localException) {
+		}
+		conn = null;
+	}
+
+	private Connection getConn(String url, String username, String password) {
+		Connection localCon = null;
+		while(true) {
+			try {
+				localCon = DriverManager.getConnection(url, username, password);
+			} catch (SQLException e) {
+				e.printStackTrace();
+
+				System.out.println("error, connect failed: " + url + "," + e.getMessage());				
+				localCon=null;
+			}
+			if(localCon != null)
+				break;
+			
+			try {
+				Thread.sleep(100);
+			}catch(InterruptedException ie) {
+				
+			}
+		}
+		
+		try {
+			localCon.setAutoCommit(true);
+		} catch (SQLException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+
+		return localCon;
+	}
+}
