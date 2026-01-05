@@ -1,0 +1,188 @@
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.Random;
+
+public class RandomInsert extends Thread {
+	private static String url = "jdbc:postgresql://10.44.133.56:5432/pg";
+	private static String userName = "test";
+	private static String password = "gs_123456";
+	private static String dbType = "postgres";
+	private volatile boolean stop=false;
+
+	public RandomInsert(String svt) {
+		if (svt == null) {
+			System.out.println("invalid parameter");
+			return;
+		}
+
+		if (svt.equalsIgnoreCase("gaussdb")) {
+			url = "jdbc:opengauss://10.44.133.55:7777,10.44.133.56:7777,10.44.133.57:7777/tp2?targetServerType=master&prepareThreshold=5&batchMode=on&fetchsize=1&connectionExtraInfo=fals&loggerLevel=off";
+			//url = "jdbc:opengauss://10.90.62.217:29900/postgres?targetServerType=master&prepareThreshold=5&batchMode=on&fetchsize=1&connectionExtraInfo=fals&loggerLevel=off";
+			dbType = "gaussdb";
+		} else if(svt.equalsIgnoreCase("pg")) {
+			url = "jdbc:postgresql://10.44.133.56:5432/pg";
+			dbType = "postgres";
+		}else
+		{
+			System.out.println("invalid dbtype");
+			return;
+		}
+		System.out.println("start testing " + dbType);
+
+	}
+
+	public static void main(String[] args) {
+		try {
+			new RandomInsert("gaussdb").start();
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
+
+	public void run()  {
+		Connection conn1 = getConn(url);
+		Random r = new Random();
+		//create table part(a int, b int, c int) PARTITION BY RANGE(a) ( partition p start(100) end(1000000) every(100));
+		PreparedStatement stmt=null;
+		try {
+			stmt=conn1.prepareStatement("insert into part values (?,?,?)");
+		} catch (SQLException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
+		for (int i = 0; i < 2000000000; i++) {
+			long startTime=System.currentTimeMillis();
+			while (!init(conn1))
+				;
+
+			try {
+
+				int a, b, c ;
+				a=r.nextInt(1000000);
+				b=r.nextInt(1000000);
+				c=r.nextInt(1000000);
+				stmt.setInt(1, a);
+				stmt.setInt(1, b);
+				stmt.setInt(1, c);
+				stmt.execute();
+				
+				conn1.commit();
+
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+			
+			long endTime=System.currentTimeMillis();
+			System.err.println("elipsed time=" + (endTime - startTime));
+		}
+		stop=true;
+		
+		closeConn(conn1);
+
+	}
+
+	private void check(Connection conn) {
+		new Thread() {
+			public void run() {
+				try {
+					conn.setAutoCommit(false);
+					conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+					PreparedStatement s1 = conn.prepareStatement(
+							"(Select /*+ tablescan(b) */ a1,'tablescan' from a b except all select  /*+no tablescan(a) */   a1,'tablescan' from a)"
+									+ "union all (Select /*+no tablescan(a) */ a1,'indexscan' from a  except all select  /*+tablescan(a) */  a1,'indexscan' from a);");
+
+					while (!stop) {
+						ResultSet rs = s1.executeQuery();
+						while (rs.next()) {
+							System.out.println("bad result : " + rs.getInt(1));
+						}
+						rs.close();
+					}
+				} catch (Exception e) {
+					e.printStackTrace();
+				}
+			}
+		}.start();
+	}
+
+	private boolean init(Connection conn) {
+		try {
+			Statement stmt = conn.createStatement();
+			System.out.println("#init start");
+			try {
+				stmt.execute("delete from a;");
+			} catch (SQLException e) {
+				e.printStackTrace();
+				if (e.getMessage().contains("does not exist")) {
+					// not exists
+					try {
+						conn.rollback();
+						stmt.execute("drop table if exists a;");
+						if(dbType.equalsIgnoreCase("gaussdb"))
+							stmt.execute("create table a(a1 int , a2 int , primary key(a1)) PARTITION BY RANGE(a) ( partition p start(100) end(1000000) every(100)) ;");
+						else
+							stmt.execute("create table a(a1 int , a2 int , primary key(a1)) ;");
+					} catch (SQLException e1) {
+						e1.printStackTrace();
+					}
+				}
+			}
+
+			stmt.execute("insert into a values(1,1);");
+			stmt.execute("insert into a values(2,2);");
+			stmt.execute("insert into a values(3,3);");
+			conn.commit();
+			System.out.println("#init finished");
+		} catch (SQLException e) {
+			System.out.println(e.getMessage());
+			try {
+				conn.rollback();
+			} catch (SQLException e2) {
+				System.out.println(e2.getMessage());
+			}
+			return false;
+		}
+		return true;
+	}
+
+	public static void closeConn(Connection con) {
+		try {
+			con.close();
+		}catch (SQLException e) {
+			System.out.println("failed to close connection: " + e.getMessage());
+			}
+	}
+	public static Connection getConn(String url) {
+		try {
+			if (dbType.equalsIgnoreCase("oracle"))
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+			else if (dbType.equalsIgnoreCase("postgres"))
+				Class.forName("org.postgresql.Driver");
+			else if (dbType.equalsIgnoreCase("gaussdb"))
+				Class.forName("com.huawei.opengauss.jdbc.Driver");
+			else
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+		} catch (ClassNotFoundException e) {
+			System.out.println("error, can not find driver");
+			e.printStackTrace();
+			System.exit(-1);
+			return null;
+		}
+
+		Connection con = null;
+		try {
+			con = DriverManager.getConnection(url, userName, password);
+			con.setAutoCommit(false);
+		} catch (SQLException e) {
+			System.out.println("error, connect failed: " + url);
+			e.printStackTrace();
+		}
+
+		return con;
+	}
+}
