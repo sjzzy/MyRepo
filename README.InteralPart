@@ -1,0 +1,156 @@
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.text.SimpleDateFormat;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+import java.sql.CallableStatement;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
+/*
+  * 测试并发向interval分区导入数据，校验数据的一致性
+ * 初始化sql：
+ * create table part (a int8, b timestamp, c text default lpad('a',3000,'b'),d
+	timestamp default now())
+	partition by range(b) interval ('15 min') (partition p1 values less
+	 than('2022-1-20 17:00'));
+	create index pi on part(a) global;
+	*/
+//校验sql：
+//select /*+ indexonlyscan(part) */ count(*) from part where a>0 union  select /*+ tablescan(p1) */ count(*)from part p1 where a>0;
+public class InteralPart extends Thread {
+	private static String dbType = "postgres";
+	private int id = 0;
+	static AtomicLong count2 = new AtomicLong(0);
+
+	public static void setDbType(String db) {
+		assert (db != null);
+		dbType = db;
+	}
+
+	public InteralPart(int id) {
+		this.id = id;
+	}
+	
+	public void run() {
+		String username = null;
+		String password = null;
+		Connection conn = null;
+		PreparedStatement pstmt = null;
+		Statement stmt2 = null;
+		SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+
+		username = "test";
+		password = "gs_123456";
+		setDbType("postgres");
+		conn = getConn(
+				"jdbc:postgresql://10.44.133.55:7777/big?targetServerType=master&prepareThreshold=3&batchMode=on&fetchsize=1&loggerLevel=OFF",
+				username, password);
+		if (conn == null) {
+			return;
+		}
+
+		try {
+			conn.setAutoCommit(false);
+			pstmt = conn.prepareStatement("insert into part values(?,?)");
+			stmt2 = conn.createStatement();
+			// stmt2.execute("set current_schema=test");
+
+		} catch (Exception e) {
+			e.printStackTrace();
+			return;
+		}
+
+		Random r = new Random();
+		int num = 0;
+
+		for (int i = 1; i <= 100000000; i++) {
+			try {
+				// 100 day
+				java.sql.Timestamp d = new java.sql.Timestamp(
+						System.currentTimeMillis() + r.nextLong() % (60 * 15 * 4 * 24 * 1000L * 100));
+				long id = r.nextLong() % 100000;
+				pstmt.setLong(1, id);
+				pstmt.setTimestamp(2, d);
+				pstmt.addBatch();
+				pstmt.addBatch();
+				pstmt.execute();
+
+				if (r.nextInt(10) < 10) {
+					if (r.nextBoolean()) {
+						conn.commit();
+						count2.incrementAndGet();
+					} else
+						conn.rollback();
+				}
+
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					conn.rollback();
+				} catch (Exception e2) {
+				}
+			}
+		}
+		freeConn(conn);
+	}
+
+	public static void main(String[] args) {
+		for (int i = 0; i < 1500; i++)
+			new InteralPart(i).start();
+
+		long endTime = System.currentTimeMillis() + 10 * 24 * 3600 * 1000;
+		long pre = count2.get();
+		long curr = 0;
+		while (System.currentTimeMillis() <= endTime) {
+			try {
+				Thread.sleep(3 * 1000);
+			} catch (InterruptedException e) {
+				//
+			}
+			curr = count2.get();
+			System.out.println("tps = " + (curr - pre) / 3 + ",total = " + curr + ", " + System.currentTimeMillis());
+			pre = curr;
+		}
+		System.out.println("test finished: total = " + curr + ", " + System.currentTimeMillis());
+
+	}
+
+	public static void freeConn(Connection conn) {
+		try {
+			if (conn != null)
+				conn.close();
+		} catch (Exception e) {
+		}
+		conn = null;
+	}
+
+	public static Connection getConn(String url, String username, String password) {
+		try {
+			if (dbType.equalsIgnoreCase("oracle")) {
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+			} else if (dbType.equalsIgnoreCase("postgres")) {
+				Class.forName("org.postgresql.Driver");
+			} else if (dbType.equalsIgnoreCase("gaussdb")) {
+				Class.forName("com.huawei.gauss200.jdbc.Driver");
+			} else {
+				Class.forName("oracle.jdbc.driver.OracleDriver");
+			}
+		} catch (ClassNotFoundException e) {
+			System.out.println("error, can not find driver");
+			e.printStackTrace();
+			return null;
+		}
+
+		Connection con = null;
+		try {
+			con = DriverManager.getConnection(url, username, password);
+		} catch (SQLException e) {
+			System.out.println("error, connect failed: " + url);
+			e.printStackTrace();
+		}
+
+		return con;
+	}
+}
