@@ -1,0 +1,25 @@
+
+function gen()
+{
+echo "\parallel on 10"
+for((i=0;i<1000;i++))
+do
+echo "
+  select /*+tablescan(stk_non_guar_setlm_main)*/count(biz_seq_no) from test_$i stk_non_guar_setlm_main union   select /*+indexonlyscan(stk_non_guar_setlm_main test_pk_$i )*/count(biz_seq_no) from test_$i stk_non_guar_setlm_main;
+
+select /*+tablescan(stk_non_guar_setlm_main)*/count(instance+idx) from test_$i stk_non_guar_setlm_main union   select /*+indexonlyscan(stk_non_guar_setlm_main test_idx2$i )*/count(instance+idx) from test_$i stk_non_guar_setlm_main;
+
+select /*+tablescan(stk_non_guar_setlm_main)*/count(instance) from test_$i stk_non_guar_setlm_main union   select /*+indexonlyscan(stk_non_guar_setlm_main test_idx1_$i )*/count(instance) from  test_$i stk_non_guar_setlm_main;
+
+select /*+tablescan(stk_non_guar_setlm_main)*/count(sharding) from test_$i stk_non_guar_setlm_main union   select /*+indexonlyscan(stk_non_guar_setlm_main test_idx3$i )*/count(sharding) from test_$i stk_non_guar_setlm_main;
+"
+done
+echo "\parallel off"
+}
+
+gen >check.sql
+
+while ((1))
+do
+	gsql -d dbtest -p 43400 -U sql -W Gauss_234 -f check.sql >>check.log 2>&1
+done
