@@ -1,0 +1,194 @@
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.Statement;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+/*
+
+ --init.sql
+ CREATE TABLE test (
+    instance varchar(100) NOT NULL,
+    idx integer(11) NOT NULL,
+    sharding integer(11) NOT NULL,
+    biz_seq_no varchar(24) NOT NULL,
+    biz_type varchar(4)  NOT NULL,
+    report_index decimal(18,0) NOT NULL,
+    trad_category varchar(4)  NOT NULL,
+    sec_id varchar(12)  NOT NULL,
+    sec_type varchar(3)  NOT NULL,
+    sec_sub_type varchar(3) NOT NULL,
+    r_code varchar(8) ,
+    r_dscr varchar(200) ,
+    ts timestamp DEFAULT now()
+);
+
+CREATE INDEX test_idx1_1 ON test_1 (instance)  ;
+ALTER TABLE public.test_1 ADD CONSTRAINT test_pk_1 PRIMARY KEY  (biz_seq_no) ;
+CREATE INDEX test_idx31  ON test_1 (sharding)  ;
+CREATE UNIQUE INDEX test_idx21 ON test_1 (instance, idx);
+
+
+
+---create.sh
+for((i=0;i<1000;i++))
+do
+        gsql -p 43400 -h 10.50.158.100,10.50.158.101,10.50.158.102 -U sql -W Gauss_234 -d dbtest -c "
+ CREATE TABLE test_$i (       like test  );
+
+ CREATE INDEX test_idx1_$i USING ubtree ON test_$i (instance) WITH (storage_type=ustore) TABLESPACE pg_default;
+ ALTER TABLE test_$i ADD CONSTRAINT test_pk_$i PRIMARY KEY USING ubtree  (biz_seq_no) WITH (storage_type=ustore);
+ CREATE UNIQUE INDEX test_idx2$i USING ubtree ON test_$i (instance, idx) WITH (storage_type=ustore) TABLESPACE pg_default;
+ CREATE INDEX test_idx3$i USING ubtree ON test_$i (sharding) WITH (storage_type=ustore) TABLESPACE pg_default;
+"
+done
+
+ */
+
+public class IndexDataTest extends Thread {
+	//String url = "jdbc:gaussdb://10.50.158.100:43400,10.50.158.101:43400,10.50.158.102:43400/dbtest?targetServerType=master&loggerLevel=OFF&allowEncodingChanges=true&characterEncoding=UTF8&uppercaseAttributeName=true";
+	//String user = "sql";
+	//String passwd = "Gauss_234";
+	String url="jdbc:gaussdb://8.92.4.221:13003,8.92.4.222:13003,8.92.4.223:13003/tpcc?batchMode=on&tenantName=tenantA&connectMode=auth&tenantPassword=gauss@567&prepareThreshold=1&fetchsize=2";
+	String user = "test";
+	String passwd = "gs_123456";
+	
+
+	Connection conn = null;
+	String insertSQL = "insert into  test_%d values(?,?,?,?,'500',600,700,800,90,10,1120000,1120000)";
+	PreparedStatement insert[] = new PreparedStatement[table_num];
+
+	String deleteSQL = "delete from test_%d where sharding between ? and ? ";
+	PreparedStatement delete[] = new PreparedStatement[table_num];
+
+//	String upsertSQL = "insert into  test_%d values(?,?,?,?,'500',600,700,800,90,10,1120000,1120000) ON DUPLICATE KEY UPDATE instance=values(instance) ";
+//	PreparedStatement upsert[] = new PreparedStatement[table_num];
+
+	Statement stmt = null;
+	int id = 0;
+	
+	final static int max_sharing = 1000000;
+	final static int table_num = 10;
+	final static AtomicLong counter = new AtomicLong();
+
+	
+	public static void main(String[] args) {
+		int threads = 500;
+		try {
+			threads = Integer.parseInt(args[0]);
+		} catch (Exception e) {
+			System.out.println("error occured while parsing parameter, use default threads:" + threads + "\n detail:"
+					+ e.getMessage());
+		}
+		
+		for (int i = 0; i < threads; i++) {
+			new IndexDataTest(i).start();
+		}
+	}
+
+	public IndexDataTest(int i) {
+		id = i;
+	}
+
+	private void initDB() {
+		conn = this.connGaussdb(url, user, passwd);
+		try {
+			for (int i = 0; i < table_num; i++) {
+				insert[i] = conn.prepareStatement(String.format(insertSQL, i));
+				delete[i] = conn.prepareStatement(String.format(deleteSQL, i));
+			}
+			stmt = conn.createStatement();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+	private Connection connGaussdb(String url, String user, String passwd) {
+		Connection conn = null;
+		String driver = "com.huawei.gaussdb.jdbc.Driver";
+		// String driver = "org.postgresql.Driver";
+
+		while (conn == null) {
+			try {
+				Class.forName(driver).newInstance();
+				conn = DriverManager.getConnection(url, user, passwd);
+				conn.setAutoCommit(false);
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+
+		return conn;
+	}
+
+	public void run() {
+		if (id % 2==0)
+			insert();
+		else
+			delete();
+	}
+
+	public void insert() {
+		int TOTAL_RECORDS = 100000000 * 100000000;
+		initDB();
+		Random random = new Random();
+		String prefix = "_" + System.currentTimeMillis();
+		while (counter.get() < TOTAL_RECORDS) {
+			try {
+				for (int k = 0; k < random.nextInt(5); k++) {
+					int index = random.nextInt(table_num);
+					for (int x = 0; x <= random.nextInt(5); x++) {
+						insert[index].setString(1, counter.incrementAndGet()
+								+ "x123456789012345678901234567890123456789012345678901234567890123456789" + prefix);
+						insert[index].setInt(2, random.nextInt(100000000));
+						insert[index].setInt(3, random.nextInt(max_sharing));// match with delete
+						insert[index].setString(4, (counter.incrementAndGet()) + prefix);
+						insert[index].addBatch();
+					}
+					insert[index].executeBatch();
+				}
+				if (random.nextInt(1000) > 1)
+					conn.commit();
+				else
+					conn.rollback();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					stmt.execute("select 1");
+				} catch (Exception e2) {
+					initDB();
+				}
+			}
+		}
+	}
+
+	public void delete() {
+		initDB();
+		Random random = new Random();
+		while (true) {
+			try {
+				for (int k = 0; k < random.nextInt(5); k++) {
+					int index = random.nextInt(table_num);
+
+					int range = random.nextInt(max_sharing);
+					delete[index].setInt(1, range);
+					delete[index].setInt(2, range + 1000);
+					delete[index].addBatch();
+					delete[index].executeBatch();
+				}
+				if (random.nextInt(1000) > 1)
+					conn.commit();
+				else
+					conn.rollback();
+			} catch (Exception e) {
+				e.printStackTrace();
+				try {
+					stmt.execute("select 1");
+				} catch (Exception e2) {
+					initDB();
+				}
+			}
+		}
+	}
+
+}
